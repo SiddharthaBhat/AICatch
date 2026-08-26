@@ -1,0 +1,4 @@
+[server]
+# Allow uploads up to 10 GB. Streamlit requires a finite value; increase this
+# further if your deployment needs to accept larger files.
+maxUploadSize = 10240

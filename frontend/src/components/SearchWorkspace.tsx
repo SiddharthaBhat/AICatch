@@ -142,6 +142,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       }
 
       if (filterCamera) searchParams.cameraId = filterCamera;
+      if (filterObjectType) searchParams.objectType = filterObjectType;
 
       const matches = await apiService.executeForensicSearch(searchParams);
       
@@ -487,9 +488,11 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
         ) : searched && results.length === 0 ? (
           <div className="card" style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>
             <AlertTriangle size={32} style={{ margin: "0 auto 10px", color: "var(--text-muted)" }} />
-            <h3 style={{ fontSize: "15px", color: "var(--text-primary)", marginBottom: "4px" }}>No reliable matches found</h3>
+            <h3 style={{ fontSize: "15px", color: "var(--text-primary)", marginBottom: "4px" }}>
+              {errorMsg ? "Image search needs attention" : "No reliable matches found"}
+            </h3>
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              Try adjusting your search query description or select a different image.
+              {errorMsg || "Try adjusting your search query description or select a different image."}
             </p>
           </div>
         ) : results.length > 0 ? (

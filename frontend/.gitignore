@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+data/
+chroma_db/
+*.db
+*.pt
+.env
+.venv/
+__pycache__/

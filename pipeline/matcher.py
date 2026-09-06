@@ -155,58 +155,69 @@ class ActiveQueryMatcher:
                             incoming = incoming / incoming_norm
                             semantic_score = float(np.dot(query.vector, incoming))
                             
-                            # Calculate combined score for text queries
-                            if query.qtype == "text":
-                                from config import SEARCH_WEIGHT_SEMANTIC, SEARCH_WEIGHT_ATTRIBUTE, SEARCH_WEIGHT_QUALITY
-                                
-                                # Compute color matching
-                                if query.target_colors:
-                                    candidate_colors = []
-                                    if entity_type == "person":
-                                        candidate_colors = [
-                                            result.get("dominant_upper_color"),
-                                            result.get("secondary_upper_color"),
-                                            result.get("dominant_lower_color"),
-                                            result.get("secondary_lower_color")
-                                        ]
-                                    else:
-                                        candidate_colors = [
-                                            result.get("dominant_upper_color"),
-                                            result.get("secondary_upper_color")
-                                        ]
-                                    candidate_colors = [c for c in candidate_colors if c]
-                                    
-                                    has_color_match = False
-                                    for qc in query.target_colors:
-                                        if qc in candidate_colors:
-                                            has_color_match = True
-                                            break
-                                            
-                                    conf = result.get("color_confidence", 0.0) or 0.0
-                                    if has_color_match:
-                                        attribute_score = 0.5 + 0.5 * conf
-                                    else:
-                                        attribute_score = 0.5 * (1.0 - conf)
+                        if query.qtype == "text":
+                            from config import SEARCH_WEIGHT_SEMANTIC, SEARCH_WEIGHT_ATTRIBUTE, SEARCH_WEIGHT_QUALITY
+                            
+                            # Compute color matching
+                            if query.target_colors:
+                                candidate_colors = []
+                                if entity_type == "person":
+                                    candidate_colors = [
+                                        result.get("dominant_upper_color"),
+                                        result.get("secondary_upper_color"),
+                                        result.get("dominant_lower_color"),
+                                        result.get("secondary_lower_color")
+                                    ]
                                 else:
-                                    attribute_score = 1.0
-                                    
-                                quality_score = result.get("quality_score", 0.0) or 0.0
+                                    candidate_colors = [
+                                        result.get("dominant_upper_color"),
+                                        result.get("secondary_upper_color")
+                                    ]
+                                candidate_colors = [c for c in candidate_colors if c]
                                 
-                                final_score = (
-                                    semantic_score * SEARCH_WEIGHT_SEMANTIC +
-                                    attribute_score * SEARCH_WEIGHT_ATTRIBUTE +
-                                    quality_score * SEARCH_WEIGHT_QUALITY
-                                )
+                                has_color_match = False
+                                for qc in query.target_colors:
+                                    if qc in candidate_colors:
+                                        has_color_match = True
+                                        break
+                                        
+                                conf = result.get("color_confidence", 0.0) or 0.0
+                                if has_color_match:
+                                    attribute_score = 0.5 + 0.5 * conf
+                                else:
+                                    attribute_score = 0.5 * (1.0 - conf)
                             else:
-                                # For image alerts, just use semantic similarity
-                                final_score = semantic_score
+                                attribute_score = 1.0
                                 
-                            if final_score >= query.threshold:
-                                self.alerted_tracks.add((qid, track_uuid))
-                                matched_queries.append({
-                                    "query_id": qid,
-                                    "session_id": query.session_id,
-                                    "similarity": final_score
-                                })
-                                
+                            quality_score = result.get("quality_score", 0.0) or 0.0
+                            
+                            final_score = (
+                                semantic_score * SEARCH_WEIGHT_SEMANTIC +
+                                attribute_score * SEARCH_WEIGHT_ATTRIBUTE +
+                                quality_score * SEARCH_WEIGHT_QUALITY
+                            )
+                        else:
+                            # For image alerts, just use semantic similarity
+                            final_score = semantic_score
+                            attribute_score = 1.0
+                            quality_score = result.get("quality_score", 0.0) or 0.0
+                            
+                        if final_score >= query.threshold:
+                            self.alerted_tracks.add((qid, track_uuid))
+                            matched_queries.append({
+                                "query_id": qid,
+                                "session_id": query.session_id,
+                                "similarity": final_score,
+                                "signal_breakdown": {
+                                    "visual": round(semantic_score, 4),
+                                    "color": round(attribute_score, 4),
+                                    "quality": round(quality_score, 4),
+                                    "reid": None,
+                                    "face": None,
+                                    "ocr": result.get("plate_text"),
+                                    "composite": round(final_score, 4)
+                                }
+                            })
+                            
         return matched_queries
+

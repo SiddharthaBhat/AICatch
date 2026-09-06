@@ -63,9 +63,15 @@ class JourneyEngine:
             "entity_type": target_track.get("entity_type", "person")
         }
 
-        # 2. Get the visual embedding of the target track
+        # 2. Get the visual and Re-ID embedding of the target track
         stored = self.vector.visual_coll.get(where={"track_id": target_track_uuid}, include=["embeddings"])
         embeddings = stored.get("embeddings")
+        
+        # Check for Re-ID embedding
+        stored_reid = self.vector.reid_coll.get(where={"track_id": target_track_uuid}, include=["embeddings"])
+        reid_embeddings = stored_reid.get("embeddings")
+        target_reid_emb = reid_embeddings[0] if (reid_embeddings is not None and len(reid_embeddings) > 0 and len(reid_embeddings[0]) > 0) else None
+
         if embeddings is None or len(embeddings) == 0 or len(embeddings[0]) == 0:
             LOGGER.warning(f"No vector embedding found for track {target_track_uuid}.")
             return {
@@ -79,7 +85,8 @@ class JourneyEngine:
                     "confidence": 1.0,
                     "confidence_tier": "HIGH",
                     "reason": "Initial target observation",
-                    "crop_path": target_crop
+                    "crop_path": target_crop,
+                    "signal_breakdown": {"visual": 1.0, "reid": 1.0, "temporal": 1.0, "topology": "ORIGIN"}
                 }],
                 "possible_transitions": []
             }
@@ -93,6 +100,22 @@ class JourneyEngine:
             top_k=50,
             filters=filters
         )
+        
+        # Optional Re-ID matches map
+        reid_scores_by_track = {}
+        if target_reid_emb is not None:
+            try:
+                reid_matches = self.vector.query_reid_embeddings(
+                    query_embedding=target_reid_emb,
+                    top_k=50,
+                    filters=filters
+                )
+                for rm in reid_matches:
+                    r_tid = rm.get("metadata", {}).get("track_id")
+                    if r_tid:
+                        reid_scores_by_track[r_tid] = max(reid_scores_by_track.get(r_tid, 0.0), rm["similarity"])
+            except Exception as re_err:
+                LOGGER.debug("Re-ID query note in journey engine: %s", re_err)
 
         camera_recs = self.sqlite.get_cameras_by_job(target_track["job_id"])
         camera_map = {c["id"]: c for c in camera_recs}
@@ -112,7 +135,13 @@ class JourneyEngine:
             "confidence": 1.0,
             "confidence_tier": "HIGH",
             "reason": "Origin of selected subject",
-            "crop_path": target_crop
+            "crop_path": target_crop,
+            "signal_breakdown": {
+                "visual": 1.0,
+                "reid": 1.0 if target_reid_emb is not None else None,
+                "temporal": 1.0,
+                "topology": "ORIGIN"
+            }
         }
         candidate_events.append(start_node)
 
@@ -133,6 +162,8 @@ class JourneyEngine:
             seen_tracks.add(match_uuid)
             dets = self.sqlite.get_detections_by_track(match_uuid)
             crop = dets[0]["crop_path"] if dets else ""
+            
+            reid_sim = reid_scores_by_track.get(match_uuid)
 
             candidate_events.append({
                 "track_uuid": match_uuid,
@@ -141,6 +172,7 @@ class JourneyEngine:
                 "timestamp": track["start_time"],
                 "duration": track["end_time"] - track["start_time"],
                 "similarity": round(similarity, 3),
+                "reid_similarity": round(reid_sim, 3) if reid_sim is not None else None,
                 "crop_path": crop
             })
 
@@ -157,9 +189,10 @@ class JourneyEngine:
             prev_end = prev_event["timestamp"] + prev_event["duration"]
             transit_time = curr_event["timestamp"] - prev_end
             
-            # Temporal overlap check
-            if transit_time < -3.0:
-                # Incompatible overlapping timeline on different cameras
+            # Strict topological & temporal constraint:
+            # Different cameras cannot have negative transit time (subject cannot be in 2 places at once)
+            if prev_event["camera_id"] != curr_event["camera_id"] and transit_time < 0.0:
+                LOGGER.info("REJECTED_IMPOSSIBLE_TRANSITION: %s -> %s negative transit (%.1fs)", prev_event["camera_id"], curr_event["camera_id"], transit_time)
                 continue
 
             min_sec, max_sec = self.get_transit_limits(prev_event["camera_id"], curr_event["camera_id"])
@@ -172,29 +205,42 @@ class JourneyEngine:
             if prev_event["camera_id"] != curr_event["camera_id"]:
                 if transit_time < min_sec:
                     tier = "WEAK"
-                    time_penalty = 0.5
+                    time_penalty = 0.4
                     reason = f"Transition too rapid ({transit_time:.1f}s, min required {min_sec}s)"
                 elif transit_time > max_sec:
                     tier = "MEDIUM"
                     time_penalty = max(0.4, 1.0 - ((transit_time - max_sec) / time_window_sec))
                     reason = f"Appearance match with transit gap ({transit_time:.1f}s)"
                 else:
-                    tier = "HIGH" if curr_event["similarity"] >= 0.78 else "MEDIUM"
+                    tier = "HIGH" if curr_event["similarity"] >= 0.75 else "MEDIUM"
                     reason = f"Plausible transit ({transit_time:.1f}s) between cameras with {int(curr_event['similarity']*100)}% appearance match"
             else:
-                # Same camera re-entry
-                tier = "HIGH" if curr_event["similarity"] >= 0.75 else "MEDIUM"
+                tier = "HIGH" if curr_event["similarity"] >= 0.72 else "MEDIUM"
                 reason = f"Re-appearance in {curr_event['camera_name']} after {transit_time:.1f}s"
 
-            composite_conf = curr_event["similarity"] * time_penalty
+            # Combine visual + Re-ID if available
+            vis_sim = curr_event["similarity"]
+            reid_sim = curr_event.get("reid_similarity")
+            if reid_sim is not None:
+                base_sim = 0.65 * vis_sim + 0.35 * reid_sim
+            else:
+                base_sim = vis_sim
+
+            composite_conf = base_sim * time_penalty
             curr_event["confidence"] = round(composite_conf, 3)
             curr_event["confidence_tier"] = tier
             curr_event["reason"] = reason
             curr_event["transit_time_sec"] = max(0.0, transit_time)
+            curr_event["signal_breakdown"] = {
+                "visual": vis_sim,
+                "reid": reid_sim,
+                "temporal": round(time_penalty, 3),
+                "topology": f"{prev_event['camera_name']} -> {curr_event['camera_name']} ({transit_time:.1f}s)"
+            }
 
-            if tier == "HIGH" and composite_conf >= 0.72:
+            if tier == "HIGH" and composite_conf >= 0.70:
                 confirmed_journey.append(curr_event)
-            elif composite_conf >= 0.45:
+            elif composite_conf >= 0.40:
                 possible_transitions.append(curr_event)
 
         return {
@@ -202,3 +248,4 @@ class JourneyEngine:
             "confirmed_journey": confirmed_journey,
             "possible_transitions": possible_transitions
         }
+

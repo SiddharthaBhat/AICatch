@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-09-06 15:22:36",
+  "query_image": "track_1_frame_1.jpg",
+  "embedding_latencies_ms": {
+    "clip_embed_ms": 427.38,
+    "reid_embed_ms": 267.38
+  },
+  "methods": {
+    "A_CLIP_Only": {
+      "query_latency_ms": 1799.2,
+      "candidate_count": 2,
+      "top_scores": [
+        1.0312,
+        0.9894
+      ],
+      "metrics": {
+        "mAP": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-1": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-10": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Precision@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Recall@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET"
+      }
+    },
+    "B_ReID_Only": {
+      "query_latency_ms": 180.63,
+      "candidate_count": 20,
+      "top_scores": [
+        0.9887,
+        0.9123,
+        0.901,
+        0.8934,
+        0.8933
+      ],
+      "metrics": {
+        "mAP": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-1": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-10": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Precision@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Recall@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET"
+      }
+    },
+    "C_CLIP_Plus_ReID_RRF": {
+      "query_latency_ms": 1574.77,
+      "candidate_count": 2,
+      "top_rrf_scores": [
+        0.01639,
+        0.01613
+      ],
+      "metrics": {
+        "mAP": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-1": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Rank-10": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Precision@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+        "Recall@5": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET"
+      }
+    }
+  }
+}

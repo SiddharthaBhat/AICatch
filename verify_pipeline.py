@@ -10,6 +10,8 @@ import torch
 from PIL import Image
 
 # Ensure root directory is in python PATH
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 sys.path.append(os.path.abspath("."))
 
 from config import SQLITE_DB_PATH, CHROMA_PERSIST_DIR, MEDIA_DIR, UPLOAD_DIR

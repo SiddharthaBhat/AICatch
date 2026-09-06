@@ -1,0 +1,74 @@
+{
+  "timestamp": "2026-09-06 15:17:39",
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9",
+    "torch": "2.5.1+cu121",
+    "device": "cuda",
+    "gpu_name": "NVIDIA GeForce RTX 3050 Laptop GPU"
+  },
+  "video_metadata": {
+    "file": "inside.mp4",
+    "duration_sec": 601.71,
+    "resolution": "848x478",
+    "source_fps": 12.0,
+    "decoded_frames": 22,
+    "processed_frames": 22
+  },
+  "configuration": {
+    "sampling_fps": 2.0,
+    "batch_size": 16,
+    "decoder_mode": "software",
+    "models": {
+      "detection": "C:\\Users\\siddu\\Downloads\\AICatch\\yolo11s.pt",
+      "visual": "clip_vit_b32:v1",
+      "reid": "mobilenet_v3_reid_576:v1"
+    }
+  },
+  "throughput": {
+    "frames_per_sec": 4.69,
+    "video_minutes_per_minute": 2.34,
+    "total_wall_clock_sec": 4.696
+  },
+  "stage_latencies_sec": {
+    "decode": 0.1165,
+    "detection": 0.345,
+    "tracking": 0.0012,
+    "cropping": 0.0003,
+    "clip": 0.9752,
+    "reid": 0.7975,
+    "face": 2.2204,
+    "ocr": 0.0,
+    "sqlite": 0.0545,
+    "chroma_api": 0.2099,
+    "chroma_verify": 0.007,
+    "total": 4.6955
+  },
+  "counts": {
+    "decoded_frames": 22,
+    "processed_frames": 22,
+    "detections": 44,
+    "tracks": 2,
+    "crops": 44,
+    "clip_embeddings": 44,
+    "reid_embeddings": 44,
+    "face_embeddings": 22,
+    "ocr_readings": 0,
+    "sqlite_rows": 44,
+    "chroma_vectors": 88,
+    "chroma_verified": 44,
+    "failed_frames": 0,
+    "failed_embeddings": 0
+  },
+  "hardware": {
+    "cpu_percent": 59.7,
+    "ram_used_mb": 9999.99,
+    "ram_total_mb": 16202.67,
+    "gpu_available": true,
+    "gpu_device": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "gpu_allocated_mb": 440.36,
+    "gpu_reserved_mb": 1098.0,
+    "gpu_peak_mb": 845.89
+  },
+  "ground_truth_accuracy": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET"
+}

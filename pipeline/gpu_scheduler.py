@@ -93,12 +93,15 @@ class GPUScheduler(threading.Thread):
         self.reid_model: Optional[torch.nn.Module] = None
         self.reid_transform: Optional[transforms.Compose] = None
         
-        # Thread lock for model execution
-        self.gpu_lock = threading.Lock()
+        # Thread lock for model execution (re-entrant)
+        self.gpu_lock = threading.RLock()
 
     def load_models(self) -> None:
         """Initializes and budgets all models on CUDA sequentially to prevent VRAM overflow."""
         with self.gpu_lock:
+            if self.yolo is not None and self.clip_model is not None:
+                LOGGER.info("Models already loaded in GPUScheduler, skipping redundant initialization.")
+                return
             LOGGER.info("Initializing neural network models on GPU...")
             
             # 1. Load YOLOv8 Tracker
@@ -197,8 +200,9 @@ class GPUScheduler(threading.Thread):
                                     break
                     
                     if all_decoders_finished:
-                        LOGGER.info(f"All decoders completed work for Job {job_id}. Updating status to completed.")
-                        self.job_manager.complete_job(job_id)
+                        LOGGER.info(f"All decoders completed work for Job {job_id}. Running indexing verification and completion...")
+                        vdb = getattr(self.dispatcher, "vector", None) if self.dispatcher else None
+                        self.job_manager.complete_job(job_id, vector_db=vdb, dispatcher=self.dispatcher)
 
                 # 2. Gather active decoders to process frame queue
                 decoders = self.job_manager.get_active_decoders()
@@ -277,14 +281,10 @@ class GPUScheduler(threading.Thread):
             return
 
         # 1. Run YOLOv8 Object Detection on filtered frames
-        # Prepare inputs
         frames = [item[2][2] for item in filtered_batch]
         
         start_yolo = time.time()
-        if not hasattr(self, "_first_inference_logged"):
-            LOGGER.info(f"MILESTONE: FIRST GPU INFERENCE START at {start_yolo}")
         with self.gpu_lock:
-            # YOLO expects BGR lists, handles scaling internally to imgsz=640
             results = self.yolo.predict(
                 source=frames,
                 imgsz=640,
@@ -292,11 +292,9 @@ class GPUScheduler(threading.Thread):
                 verbose=False,
                 conf=0.25
             )
-        if not hasattr(self, "_first_inference_logged"):
-            LOGGER.info(f"MILESTONE: FIRST GPU INFERENCE FINISHED at {time.time()}")
-            self._first_inference_logged = True
-            
-        PerformanceMonitorInstance.record_latency("yolo", time.time() - start_yolo)
+        elapsed_yolo = time.time() - start_yolo
+        LOGGER.info(f"GPU_TRACE: YOLO inference finished on {len(frames)} frames in {elapsed_yolo:.3f}s")
+        PerformanceMonitorInstance.record_latency("yolo", elapsed_yolo)
         PerformanceMonitorInstance.update_counts(decoded=len(filtered_batch))
 
         # Process detections frame by frame
@@ -320,6 +318,7 @@ class GPUScheduler(threading.Thread):
             
             # Update per-camera tracking state (IoU-based association)
             tracked_entities = self._update_camera_tracker(camera_id, job_id, frame_idx, timestamp, frame_bgr, boxes_to_track)
+            LOGGER.info(f"GPU_TRACE: Frame {frame_idx} produced {len(tracked_entities)} tracked entities to schedule")
             
             # Perform conditional heavy inference (CLIP, FaceNet, OCR) on track keyframes
             for track_data, crop, entity_type, bbox in tracked_entities:
@@ -470,6 +469,7 @@ class GPUScheduler(threading.Thread):
             track.last_embedded_time = timestamp
             track.embedded_count += 1
             track.quality_score = quality
+            LOGGER.info(f"GPU_TRACE: CLIP embedding generated for track {track.track_id} in {time.time()-start_clip:.3f}s")
 
             # If entity is a person, extract 576-D Re-ID embedding
             if entity_type == "person" and self.reid_model is not None and self.reid_transform is not None:
@@ -481,6 +481,7 @@ class GPUScheduler(threading.Thread):
                         reid_features = self.reid_model(tensor_crop)
                         reid_features = reid_features / reid_features.norm(p=2, dim=-1, keepdim=True)
                         track.reid_embedding = reid_features.cpu().float().numpy()[0].tolist()
+                    LOGGER.info(f"GPU_TRACE: Re-ID embedding generated for track {track.track_id}")
                 except Exception as re_ex:
                     LOGGER.debug(f"Person Re-ID extraction note: {re_ex}")
 
@@ -521,11 +522,16 @@ class GPUScheduler(threading.Thread):
             # Convert crop to RGB for face detection
             crop_rgb = cv2.cvtColor(track.best_crop, cv2.COLOR_BGR2RGB)
             
+            boxes, probs = None, None
             with self.gpu_lock:
-                # MTCNN detect face bounding boxes
-                boxes, probs = self.face_detector.detect(crop_rgb)
+                try:
+                    # MTCNN detect face bounding boxes
+                    boxes, probs = self.face_detector.detect(crop_rgb)
+                except Exception as f_err:
+                    LOGGER.debug(f"Face detector note for track {track.track_id}: {f_err}")
+                    boxes, probs = None, None
                 
-            if boxes is not None and len(boxes) > 0 and probs[0] is not None:
+            if boxes is not None and len(boxes) > 0 and probs is not None and probs[0] is not None:
                 face_conf = float(probs[0])
                 fx1, fy1, fx2, fy2 = (int(coord) for coord in boxes[0])
                 
@@ -625,6 +631,7 @@ class GPUScheduler(threading.Thread):
         thumbnail_path = self.media.save_thumbnail(
             crop, job_id, camera_id, frame_idx
         )
+        LOGGER.info(f"GPU_TRACE: Saved crop {crop_path.name} and thumbnail {thumbnail_path.name}")
 
         # Prepare result payload for dispatcher
         result_payload = {
@@ -653,16 +660,19 @@ class GPUScheduler(threading.Thread):
             "dominant_lower_color": track.dominant_lower_color,
             "secondary_lower_color": track.secondary_lower_color,
             "color_confidence": track.color_confidence,
-            "embedding_model": CLIP_MODEL_NAME,
-            "embedding_version": "1.0",
+            "embedding_model": EMBEDDING_MODEL_NAME,
+            "embedding_version": EMBEDDING_VERSION,
+            "reid_embedding": getattr(track, "reid_embedding", None),
+            "reid_model": REID_MODEL_NAME,
+            "reid_version": REID_VERSION,
             "should_embed": run_clip
         }
 
         # Dispatch output
         if self.dispatcher:
+            LOGGER.info(f"GPU_TRACE: Dispatching result for track {track.track_id} (job {job_id})")
             self.dispatcher.dispatch(result_payload)
         else:
-            # Local placeholder output for debugging if dispatcher not ready
             LOGGER.debug(f"GPUScheduler dispatch placeholder: {result_payload['track_uuid']} | {entity_type}")
 
     def stop_scheduler(self) -> None:
@@ -695,6 +705,19 @@ class GPUScheduler(threading.Thread):
                     res = res.pooler_output
                 res = res / res.norm(p=2, dim=-1, keepdim=True)
                 return res.cpu().numpy()[0].tolist()
+
+    def embed_reid(self, image: Image.Image) -> Optional[List[float]]:
+        """Extracts and normalizes person Re-ID embedding under the GPU lock."""
+        if self.reid_model is None or self.reid_transform is None:
+            return None
+        with self.gpu_lock:
+            tensor_crop = self.reid_transform(image.convert("RGB")).unsqueeze(0).to(REID_DEVICE)
+            if REID_DEVICE == "cuda":
+                tensor_crop = tensor_crop.half()
+            with torch.no_grad():
+                reid_features = self.reid_model(tensor_crop)
+                reid_features = reid_features / reid_features.norm(p=2, dim=-1, keepdim=True)
+                return reid_features[0].cpu().float().numpy().tolist()
 
     def embed_face(self, image: Image.Image) -> Optional[List[float]]:
         """Extracts and embeds a face from a PIL image under the GPU lock."""

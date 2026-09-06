@@ -1,0 +1,199 @@
+{
+  "timestamp": "2026-09-06 15:15:56",
+  "hardware": {
+    "cpu_percent": 14.7,
+    "ram_used_mb": 8436.31,
+    "ram_total_mb": 16202.67,
+    "gpu_available": true,
+    "gpu_device": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "gpu_allocated_mb": 0.0,
+    "gpu_reserved_mb": 0.0,
+    "gpu_peak_mb": 0.0
+  },
+  "video": "inside.mp4",
+  "decoder_benchmark": [
+    {
+      "decoder_mode": "software",
+      "frames_decoded": 77,
+      "decode_time_sec": 0.235,
+      "decode_fps": 328.28,
+      "cpu_util_approx": 20.7,
+      "status": "PASS",
+      "downstream_throughput_fps": 4.34,
+      "total_wall_clock_sec": 17.756
+    },
+    {
+      "decoder_mode": "cuvid",
+      "frames_decoded": 76,
+      "decode_time_sec": 0.615,
+      "decode_fps": 123.56,
+      "cpu_util_approx": 20.9,
+      "status": "PASS",
+      "downstream_throughput_fps": 4.69,
+      "total_wall_clock_sec": 16.425
+    }
+  ],
+  "batch_size_benchmark": [
+    {
+      "batch_size": 1,
+      "throughput_fps": 4.24,
+      "total_sec": 5.192,
+      "yolo_latency_sec": 0.8138,
+      "clip_latency_sec": 0.969,
+      "peak_vram_mb": 423.96,
+      "processed_frames": 22,
+      "failures": 0,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 2,
+      "throughput_fps": 4.21,
+      "total_sec": 5.224,
+      "yolo_latency_sec": 0.7295,
+      "clip_latency_sec": 0.9081,
+      "peak_vram_mb": 488.27,
+      "processed_frames": 22,
+      "failures": 0,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 4,
+      "throughput_fps": 4.44,
+      "total_sec": 4.958,
+      "yolo_latency_sec": 0.4768,
+      "clip_latency_sec": 0.9894,
+      "peak_vram_mb": 465.41,
+      "processed_frames": 22,
+      "failures": 0,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 8,
+      "throughput_fps": 4.63,
+      "total_sec": 4.754,
+      "yolo_latency_sec": 0.4037,
+      "clip_latency_sec": 0.9561,
+      "peak_vram_mb": 604.15,
+      "processed_frames": 22,
+      "failures": 0,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 16,
+      "throughput_fps": 4.69,
+      "total_sec": 4.696,
+      "yolo_latency_sec": 0.345,
+      "clip_latency_sec": 0.9752,
+      "peak_vram_mb": 845.89,
+      "processed_frames": 22,
+      "failures": 0,
+      "status": "PASS"
+    }
+  ],
+  "fps_benchmark": [
+    {
+      "sampling_fps": 1.0,
+      "frames_processed": 12,
+      "total_sec": 2.709,
+      "throughput_fps": 4.43,
+      "detections": 24,
+      "tracks": 2,
+      "clip_embeddings": 24,
+      "time_saved_vs_1fps": 0.0,
+      "ground_truth_accuracy": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+      "status": "PASS"
+    },
+    {
+      "sampling_fps": 2.0,
+      "frames_processed": 22,
+      "total_sec": 4.806,
+      "throughput_fps": 4.58,
+      "detections": 44,
+      "tracks": 2,
+      "clip_embeddings": 44,
+      "time_saved_vs_1fps": -2.1,
+      "ground_truth_accuracy": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+      "status": "PASS"
+    },
+    {
+      "sampling_fps": 5.0,
+      "frames_processed": 52,
+      "total_sec": 11.134,
+      "throughput_fps": 4.67,
+      "detections": 104,
+      "tracks": 2,
+      "clip_embeddings": 104,
+      "time_saved_vs_1fps": -8.43,
+      "ground_truth_accuracy": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+      "status": "PASS"
+    },
+    {
+      "sampling_fps": 10.0,
+      "frames_processed": 102,
+      "total_sec": 21.84,
+      "throughput_fps": 4.67,
+      "detections": 204,
+      "tracks": 2,
+      "clip_embeddings": 204,
+      "time_saved_vs_1fps": -19.13,
+      "ground_truth_accuracy": "NOT AVAILABLE \u2014 NO LABELLED GROUND TRUTH DATASET",
+      "status": "PASS"
+    }
+  ],
+  "chroma_persistence_benchmark": [
+    {
+      "batch_size": 25,
+      "api_latency_sec": 0.0811,
+      "verify_latency_sec": 0.0048,
+      "end_to_end_latency_sec": 0.086,
+      "vectors_per_sec": 290.8,
+      "readback_verified": true,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 50,
+      "api_latency_sec": 0.1463,
+      "verify_latency_sec": 0.0091,
+      "end_to_end_latency_sec": 0.1554,
+      "vectors_per_sec": 321.68,
+      "readback_verified": true,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 100,
+      "api_latency_sec": 0.2126,
+      "verify_latency_sec": 0.0062,
+      "end_to_end_latency_sec": 0.2189,
+      "vectors_per_sec": 456.93,
+      "readback_verified": true,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 250,
+      "api_latency_sec": 0.572,
+      "verify_latency_sec": 0.0066,
+      "end_to_end_latency_sec": 0.5786,
+      "vectors_per_sec": 432.1,
+      "readback_verified": true,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 500,
+      "api_latency_sec": 0.7115,
+      "verify_latency_sec": 0.0067,
+      "end_to_end_latency_sec": 0.7182,
+      "vectors_per_sec": 696.16,
+      "readback_verified": true,
+      "status": "PASS"
+    },
+    {
+      "batch_size": 1000,
+      "api_latency_sec": 1.5529,
+      "verify_latency_sec": 0.0071,
+      "end_to_end_latency_sec": 1.56,
+      "vectors_per_sec": 641.02,
+      "readback_verified": true,
+      "status": "PASS"
+    }
+  ]
+}

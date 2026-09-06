@@ -1,23 +1,21 @@
-"""ChromaDB persistence and CLIP embedding helpers for AICatch."""
+"""ChromaDB persistence and versioned visual/text embedding helpers."""
 from __future__ import annotations
 
 import hashlib
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import chromadb
 import torch
 from PIL import Image
-from transformers import CLIPModel, CLIPProcessor
 
-from config import CHROMA_PERSIST_DIR, CLIP_MODEL_NAME, ensure_directories
+from config import CHROMA_PERSIST_DIR, EMBEDDING_MODEL_NAME, EMBEDDING_VERSION, ensure_directories
+from models.runtime import runtime
 
 LOGGER = logging.getLogger(__name__)
-_model: Optional[CLIPModel] = None
-_processor: Optional[CLIPProcessor] = None
 _vector_collection: Any = None
-_COLLECTION_NAME = "cctv_embeddings_clip_vit_large_patch14"
+_COLLECTION_NAME = f"cctv_embeddings_{EMBEDDING_MODEL_NAME}_{EMBEDDING_VERSION}"
 
 
 def _device() -> str:
@@ -25,42 +23,10 @@ def _device() -> str:
     return "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 
-def _load_clip() -> tuple[CLIPModel, CLIPProcessor]:
-    """Load CLIP only when embeddings are first requested."""
-    global _model, _processor
-    if _model is None or _processor is None:
-        LOGGER.info("Loading CLIP model: %s", CLIP_MODEL_NAME)
-        _processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
-        device = _device()
-        _model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(device)
-        
-        # Patch methods to return projected features directly if returned as wrappers
-        orig_get_image_features = _model.get_image_features
-        def patched_get_image_features(*args, **kwargs):
-            out = orig_get_image_features(*args, **kwargs)
-            if hasattr(out, "pooler_output"):
-                return out.pooler_output
-            return out
-        _model.get_image_features = patched_get_image_features
-
-        orig_get_text_features = _model.get_text_features
-        def patched_get_text_features(*args, **kwargs):
-            out = orig_get_text_features(*args, **kwargs)
-            if hasattr(out, "pooler_output"):
-                return out.pooler_output
-            return out
-        _model.get_text_features = patched_get_text_features
-
-        _model.eval()
-        if device == "cuda":
-            _model = _model.half()
-            torch.backends.cudnn.benchmark = True
-        LOGGER.info(
-            "CLIP vision encoder ready: patch size %s, image size %s",
-            _model.config.vision_config.patch_size,
-            _model.config.vision_config.image_size,
-        )
-    return _model, _processor
+def _load_visual_model() -> tuple[Any, Any, str]:
+    """Return the active visual model via the shared lazy runtime."""
+    loaded = runtime.visual()
+    return loaded.model, loaded.processor, loaded.device
 
 
 def _collection():
@@ -76,7 +42,7 @@ def _collection():
 
 
 def _feature_tensor(outputs: object, embedding_name: str) -> torch.Tensor:
-    """Return a 2-D embedding tensor from CLIP or encoder-only output objects."""
+    """Return a 2-D embedding tensor from CLIP/SigLIP-family outputs."""
     features = getattr(outputs, embedding_name, None)
     if not isinstance(features, torch.Tensor):
         # BaseModelOutputWithPooling exposes this directly. Prefer it over
@@ -88,14 +54,14 @@ def _feature_tensor(outputs: object, embedding_name: str) -> torch.Tensor:
         except (IndexError, KeyError, TypeError):
             features = outputs
     if not isinstance(features, torch.Tensor):
-        raise TypeError(f"CLIP did not return a tensor for {embedding_name}")
+        raise TypeError(f"Visual model did not return a tensor for {embedding_name}")
     # ``outputs[0]`` from an encoder-only fallback is [batch, tokens, hidden].
     if features.ndim == 3:
         features = features[:, 0, :]
     if features.ndim == 1:
         features = features.unsqueeze(0)
     if features.ndim != 2:
-        raise TypeError(f"CLIP returned an invalid {features.ndim}-D embedding tensor")
+        raise TypeError(f"Visual model returned an invalid {features.ndim}-D embedding tensor")
     return features
 
 
@@ -116,25 +82,23 @@ def get_image_embedding(
 
 
 def get_image_embeddings(images: list[Image.Image], batch_size: int = 32) -> list[list[float]]:
-    """Return normalised CLIP vectors in GPU/CPU-friendly batches."""
+    """Return normalised active-model vectors in GPU/CPU-friendly batches."""
     if not images:
         return []
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than zero")
     if not all(isinstance(image, Image.Image) for image in images):
         raise TypeError("images must contain only PIL.Image.Image values")
-    model, processor = _load_clip()
+    model, processor, device = _load_visual_model()
     vectors: list[list[float]] = []
-    device = _device()
     for start in range(0, len(images), batch_size):
         batch = images[start : start + batch_size]
         inputs = processor(images=[image.convert("RGB") for image in batch], return_tensors="pt").to(device)
         if device == "cuda":
             inputs["pixel_values"] = inputs["pixel_values"].half()
         with torch.no_grad():
-            res = model.get_image_features(**inputs)
-            tensor = res.image_embeds if hasattr(res, "image_embeds") else (res[0] if isinstance(res, (tuple, list)) else res)
-            tensor = tensor / tensor.norm(p=2, dim=-1, keepdim=True)
+            tensor = _feature_tensor(model.get_image_features(**inputs), "image_embeds")
+            tensor = _normalise_features(tensor)
         vectors.extend(tensor.cpu().detach().numpy().tolist())
     return vectors
 
@@ -189,21 +153,20 @@ def _generate_prompt_variations(query: str) -> list[str]:
 
 
 def get_text_embedding(text: str) -> list[float]:
-    """Return an L2-normalised CLIP vector for a natural-language query."""
+    """Return an L2-normalised vector from the active text/vision model."""
     if not text or not text.strip():
         raise ValueError("Search text cannot be empty")
-    model, processor = _load_clip()
+    model, processor, device = _load_visual_model()
     prompts = _generate_prompt_variations(text)
     LOGGER.info("Generated prompt variations for query '%s': %s", text, prompts)
     
     embeddings = []
-    device = _device()
     for prompt in prompts:
-        inputs = processor(text=[prompt], return_tensors="pt", padding=True).to(device)
+        # SigLIP2 was trained with fixed-length padding; CLIP accepts this too.
+        inputs = processor(text=[prompt], return_tensors="pt", padding="max_length").to(device)
         with torch.no_grad():
-            res = model.get_text_features(**inputs)
-            tensor = res.text_embeds if hasattr(res, "text_embeds") else (res[0] if isinstance(res, (tuple, list)) else res)
-            tensor = tensor / tensor.norm(p=2, dim=-1, keepdim=True)
+            tensor = _feature_tensor(model.get_text_features(**inputs), "text_embeds")
+            tensor = _normalise_features(tensor)
             embeddings.append(tensor)
             
     # Average the vectors

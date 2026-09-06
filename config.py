@@ -5,6 +5,7 @@ Optimized for AMD Ryzen 7 7700, 16GB RAM, RTX 3050 (4GB VRAM) on Windows.
 
 from pathlib import Path
 from typing import Dict, Any
+import os
 
 # ==============================================================================
 # 1. Path Definitions
@@ -40,27 +41,45 @@ for folder in [
 # ==============================================================================
 # 2. Hardware and Model Settings
 # ==============================================================================
-import torch
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+try:
+    import torch
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+except (ImportError, OSError):
+    # Configuration must remain readable when a system Python has a broken CUDA
+    # installation; actual inference still fails loudly in its own runtime.
+    DEVICE = "cpu"
+
+from models.registry import registry
 
 # Configurable CPU/GPU placement targets (RTX 3050 VRAM optimization)
 YOLO_DEVICE = DEVICE
-CLIP_DEVICE = "cuda"  # Run visual embeddings on GPU (CLIP is fast on GPU, low VRAM)
-REID_DEVICE = "cuda"  # Person Re-ID feature extraction on GPU
+CLIP_DEVICE = DEVICE
+REID_DEVICE = DEVICE
 FACE_DEVICE = "cpu"   # Run face models on CPU
 OCR_DEVICE = "cpu"    # Run EasyOCR on CPU
 
 # Model Names / Versioning (Lightweight choices to avoid CUDA OOM)
-YOLO_MODEL_PATH = str(BASE_DIR / "yolo11s.pt")  # High-accuracy YOLO11s model
-YOLO_MODEL_NAME = "YOLO11s"
-CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"  # 150MB FP32 CLIP model (VRAM safe)
-EMBEDDING_MODEL_NAME = "clip_vit_b32"
-EMBEDDING_VERSION = "v2"
-REID_MODEL_NAME = "mobilenet_v3_reid_576"
-REID_VERSION = "v1"
-FACE_DETECTOR_MODEL = "yolov8n-face.pt"  # Face detector or similar lightweight detector
-FACE_EMBEDDER_MODEL = "facenet"  # InceptionResnetV1 pretrained on VGGFace2
-OCR_MODEL_NAME = "easyocr"
+_detection = registry.active("detection")
+_visual = registry.active("visual")
+_reid = registry.active("reid")
+_face = registry.active("face")
+_ocr = registry.active("ocr")
+YOLO_MODEL_PATH = str(BASE_DIR / _detection.source)
+YOLO_MODEL_NAME = _detection.name
+CLIP_MODEL_NAME = _visual.source
+EMBEDDING_MODEL_NAME = _visual.key
+EMBEDDING_VERSION = _visual.version
+REID_MODEL_NAME = _reid.key
+REID_VERSION = _reid.version
+FACE_DETECTOR_MODEL = "yolov8n-face.pt"
+FACE_EMBEDDER_MODEL = _face.key
+OCR_MODEL_NAME = _ocr.key
+
+# Compatibility exports used by the legacy single-video indexer.
+CLIP_DIR = DATA_DIR / "clip"
+INDEX_DETECTOR_IMAGE_SIZE = 640
+INDEX_MAX_SUBJECTS_PER_SAMPLE = 32
+INDEX_SAMPLE_RATE_SEC = 2.5
 
 # ==============================================================================
 # 3. GPU Scheduler and Memory Settings (RTX 3050 4GB Optimization)
@@ -136,7 +155,7 @@ SEARCH_WEIGHT_QUALITY = 0.10
 FACE_MATCH_THRESHOLD = 0.72
 
 # Text search matching similarity threshold (CLIP text-image cosine)
-TEXT_MATCH_THRESHOLD = 0.26
+TEXT_MATCH_THRESHOLD = 0.26  # Legacy fallback only; benchmark calibration overrides it.
 
 # Image search matching similarity threshold (CLIP image-image cosine)
 IMAGE_MATCH_THRESHOLD = 0.55
@@ -149,3 +168,6 @@ IMAGE_FACE_WEIGHT = 0.30
 # Results below these thresholds are rejected even if they passed the raw similarity gate
 FINAL_SCORE_MIN_TEXT = 0.30
 FINAL_SCORE_MIN_IMAGE = 0.50
+
+# Backend-only development trace. Never enable this from investigator UI.
+SEARCH_DEBUG = os.getenv("AICATCH_SEARCH_DEBUG", "false").lower() == "true"

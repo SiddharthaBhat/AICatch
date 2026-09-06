@@ -20,12 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from PIL import Image
+from PIL import Image, ImageOps
 import mimetypes
 import uvicorn
 
-from config import SQLITE_DB_PATH, CHROMA_PERSIST_DIR, MEDIA_DIR, UPLOAD_DIR
+from config import SQLITE_DB_PATH, CHROMA_PERSIST_DIR, MEDIA_DIR, UPLOAD_DIR, SEARCH_DEBUG
 from storage import SQLiteDatabase, VectorDatabase, MediaStorage, SearchLayer
+from storage.search import VisualIndexEmptyError
 from pipeline import JobManager, GPUScheduler, ActiveQueryMatcher, ResultDispatcher, JourneyEngine
 from utils.monitor import PerformanceMonitorInstance
 
@@ -189,18 +190,9 @@ def reindex_job(job_id: str):
             conn.execute("DELETE FROM tracks WHERE job_id = ?", (job_id,))
             conn.execute("UPDATE jobs SET status = 'starting', processed_sec = 0.0, duration_sec = 0.0, fps = 0.0, error_msg = NULL WHERE id = ?", (job_id,))
             conn.execute("UPDATE cameras SET status = 'inactive', resolution = NULL, fps = NULL WHERE job_id = ?", (job_id,))
-
         # 3. Clean ChromaDB vectors for this job
         try:
-            vector_db.visual_coll.delete(where={"job_id": job_id})
-        except Exception:
-            pass
-        try:
-            vector_db.face_coll.delete(where={"job_id": job_id})
-        except Exception:
-            pass
-        try:
-            vector_db.reid_coll.delete(where={"job_id": job_id})
+            vector_db.delete_by_job(job_id)
         except Exception:
             pass
 
@@ -212,21 +204,188 @@ def reindex_job(job_id: str):
         LOGGER.error(f"Failed to re-index job {job_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/system/reconcile")
+def reconcile_investigations():
+    """Scans all investigations, cross-checking SQLite status against ChromaDB counts and filesystem presence."""
+    try:
+        report = {
+            "total_jobs_in_sqlite": 0,
+            "healthy_jobs": [],
+            "anomalies": [],
+            "dangling_chroma_vectors": [],
+            "dangling_crop_folders": []
+        }
+        
+        all_jobs = sqlite_db.get_jobs()
+        report["total_jobs_in_sqlite"] = len(all_jobs)
+        known_job_ids = set()
+        
+        with sqlite_db.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            for j in all_jobs:
+                jid = j["id"]
+                known_job_ids.add(jid)
+                status = j["status"]
+                
+                cur_t = conn.execute("SELECT count(*) as count FROM tracks WHERE job_id = ?", (jid,))
+                track_count = cur_t.fetchone()["count"]
+                
+                cur_d = conn.execute("SELECT count(*) as count FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?", (jid,))
+                det_count = cur_d.fetchone()["count"]
+                
+                # Check ChromaDB counts
+                vis_ids = vector_db.visual_coll.get(where={"job_id": jid})["ids"]
+                reid_ids = vector_db.reid_coll.get(where={"job_id": jid})["ids"]
+                face_ids = vector_db.face_coll.get(where={"job_id": jid})["ids"]
+                
+                vis_count = len(vis_ids)
+                reid_count = len(reid_ids)
+                face_count = len(face_ids)
+                
+                # Check crops on disk
+                crop_dir = media_storage.get_crop_dir("person") / jid
+                has_crops_on_disk = crop_dir.exists() and any(crop_dir.iterdir()) if crop_dir.exists() else False
+                
+                # Detect anomalies
+                job_anomalies = []
+                if status.upper() == "INDEXED" and vis_count == 0:
+                    job_anomalies.append("STATUS_MISMATCH: Status is INDEXED but ChromaDB has 0 visual vectors")
+                if status.upper() == "INDEXED" and det_count > 0 and vis_count == 0:
+                    job_anomalies.append("DRIFT: SQLite has detections but ChromaDB has 0 vectors")
+                if status.lower() == "failed" and track_count == 0 and det_count == 0:
+                    job_anomalies.append("ORPHANED_FAILED_RUN: Test or pipeline run failed with 0 metadata")
+                if status.upper() == "DELETE_FAILED":
+                    job_anomalies.append(f"DELETE_FAILED: Investigation deletion previously failed: {j.get('error_msg')}")
+                    
+                job_info = {
+                    "job_id": jid,
+                    "name": j["name"],
+                    "status": status,
+                    "created_at": j["created_at"],
+                    "tracks": track_count,
+                    "detections": det_count,
+                    "chroma_vectors": {"visual": vis_count, "reid": reid_count, "face": face_count},
+                    "has_crops_on_disk": has_crops_on_disk
+                }
+                
+                if job_anomalies:
+                    report["anomalies"].append({**job_info, "issues": job_anomalies})
+                else:
+                    report["healthy_jobs"].append(job_info)
+                    
+        # Check for dangling ChromaDB vectors not belonging to any known SQLite job
+        all_vis_metas = vector_db.visual_coll.get(include=["metadatas"])
+        if all_vis_metas and all_vis_metas.get("metadatas"):
+            orphaned_chroma_jobs = set()
+            for meta in all_vis_metas["metadatas"]:
+                cj_id = meta.get("job_id") or meta.get("investigation_id")
+                if cj_id and cj_id not in known_job_ids:
+                    orphaned_chroma_jobs.add(cj_id)
+            report["dangling_chroma_vectors"] = list(orphaned_chroma_jobs)
+            
+        # Check for dangling crop folders on disk
+        for crop_type in ["person", "vehicle", "face", "plate"]:
+            cdir = media_storage.get_crop_dir(crop_type)
+            if cdir.exists():
+                for p in cdir.iterdir():
+                    if p.is_dir() and p.name not in known_job_ids:
+                        report["dangling_crop_folders"].append(str(p).replace("\\", "/"))
+                        
+        return report
+    except Exception as e:
+        LOGGER.error(f"Failed to reconcile investigations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/system/reconcile/fix")
+def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: bool = True):
+    """Repairs mismatched statuses, cleans dangling vectors/media, and optionally purges failed test runs."""
+    try:
+        actions_taken = []
+        all_jobs = sqlite_db.get_jobs()
+        known_job_ids = set()
+        
+        jobs_to_purge = []
+        with sqlite_db.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            for j in all_jobs:
+                jid = j["id"]
+                known_job_ids.add(jid)
+                status = j["status"]
+                
+                # Check ChromaDB visual vectors
+                vis_ids = vector_db.visual_coll.get(where={"job_id": jid})["ids"]
+                vis_count = len(vis_ids)
+                
+                # Fix false INDEXED status
+                if status.upper() == "INDEXED" and vis_count == 0:
+                    conn.execute(
+                        "UPDATE jobs SET status = 'failed', error_msg = 'Reconciled: No visual vectors found in ChromaDB' WHERE id = ?",
+                        (jid,)
+                    )
+                    actions_taken.append(f"Fixed status of {jid} from INDEXED to failed (0 Chroma vectors).")
+                    
+                # Optionally check for failed zero-data runs
+                if purge_failed and status.lower() == "failed":
+                    cur_t = conn.execute("SELECT count(*) as count FROM tracks WHERE job_id = ?", (jid,))
+                    if cur_t.fetchone()["count"] == 0:
+                        jobs_to_purge.append(jid)
+                        
+        if purge_failed and jobs_to_purge:
+            for jid in jobs_to_purge:
+                try:
+                    delete_job(jid)
+                    actions_taken.append(f"Purged failed empty test job {jid}.")
+                except Exception as p_err:
+                    actions_taken.append(f"Failed to purge {jid}: {p_err}")
+
+                        
+        # Purge dangling Chroma vectors
+        if purge_orphaned_storage:
+            all_vis_metas = vector_db.visual_coll.get(include=["metadatas"])
+            if all_vis_metas and all_vis_metas.get("metadatas"):
+                for meta in all_vis_metas["metadatas"]:
+                    cj_id = meta.get("job_id") or meta.get("investigation_id")
+                    if cj_id and cj_id not in known_job_ids:
+                        vector_db.delete_by_job(cj_id)
+                        actions_taken.append(f"Deleted dangling vectors for unknown job {cj_id}.")
+                        
+            # Purge dangling crop folders
+            for crop_type in ["person", "vehicle", "face", "plate"]:
+                cdir = media_storage.get_crop_dir(crop_type)
+                if cdir.exists():
+                    for p in list(cdir.iterdir()):
+                        if p.is_dir() and p.name not in known_job_ids:
+                            shutil.rmtree(p)
+                            actions_taken.append(f"Deleted dangling disk crop folder {p.name}.")
+                            
+        return {"status": "reconciled", "actions_count": len(actions_taken), "actions": actions_taken}
+    except Exception as e:
+        LOGGER.error(f"Failed to fix investigation drift: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
+    """Atomically cascades investigation deletion across SQLite, ChromaDB, and disk media."""
+    job_record = sqlite_db.get_job(job_id)
+    if not job_record:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found.")
+
+    deletion_errors = []
     try:
         LOGGER.info(f"Permanently deleting investigation {job_id}...")
-        # 1. Stop job if active
+        # 1. Stop job decoders and threads if active
         if job_id in job_manager.active_jobs:
             job_manager.cleanup_job_resources(job_id)
             with job_manager.lock:
                 job_manager.active_jobs.pop(job_id, None)
                    
-        # 2. Delete vectors from Vector DB (visual and face embeddings)
+        # 2. Delete vectors from Vector DB across visual, reid, and face collections
         try:
             vector_db.delete_by_job(job_id)
         except Exception as ve:
-            LOGGER.warning(f"Vector DB cleanup warning for {job_id}: {ve}")
+            deletion_errors.append(f"Vector DB cleanup failure: {ve}")
+            LOGGER.error(f"Vector DB cleanup failure for {job_id}: {ve}")
         
         # 3. Delete media folders from disk (crops, thumbnails, clips)
         for crop_type in ["person", "vehicle", "face", "plate"]:
@@ -236,6 +395,7 @@ def delete_job(job_id: str):
                 if job_crop_path.exists():
                     shutil.rmtree(job_crop_path)
             except Exception as me:
+                deletion_errors.append(f"Failed to delete {crop_type} crop dir: {me}")
                 LOGGER.warning(f"Failed to delete crop dir for {crop_type}: {me}")
                    
         from config import THUMBNAILS_DIR, CLIPS_DIR
@@ -244,10 +404,23 @@ def delete_job(job_id: str):
                 if folder.exists():
                     shutil.rmtree(folder)
             except Exception as fe:
+                deletion_errors.append(f"Failed to delete media folder {folder}: {fe}")
                 LOGGER.warning(f"Failed to delete media folder {folder}: {fe}")
+                
+        # If external store cleanup critically failed, mark as DELETE_FAILED in SQLite
+        if deletion_errors:
+            err_summary = "; ".join(deletion_errors)
+            with sqlite_db.connection() as conn:
+                conn.execute(
+                    "UPDATE jobs SET status = 'DELETE_FAILED', error_msg = ? WHERE id = ?",
+                    (err_summary, job_id)
+                )
+            raise RuntimeError(f"Deletion failed with errors: {err_summary}")
                    
-        # 4. Comprehensive cascade delete across all SQLite tables
+        # 4. Atomic cascade delete across all SQLite tables
         with sqlite_db.connection() as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            
             # Delete evidence items & folders
             conn.execute("DELETE FROM notes WHERE parent_type = 'job' AND parent_id = ?", (job_id,))
             conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id IN (SELECT id FROM folders WHERE job_id = ?)", (job_id,))
@@ -261,20 +434,29 @@ def delete_job(job_id: str):
             conn.execute("DELETE FROM journey_events WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM perf_stats WHERE job_id = ?", (job_id,))
             
-            # Delete detections, tracks, cameras, frames
+            # Delete detections, tracks, frames, cameras
             conn.execute("DELETE FROM detections WHERE track_id IN (SELECT id FROM tracks WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM tracks WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM frames WHERE camera_id IN (SELECT id FROM cameras WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM cameras WHERE job_id = ?", (job_id,))
             
-            # Delete job record
+            # Delete primary job record
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-            conn.commit()
                
         LOGGER.info(f"Investigation {job_id} deleted successfully.")
         return {"job_id": job_id, "status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         LOGGER.error(f"Failed to delete job {job_id}: {e}", exc_info=True)
+        try:
+            with sqlite_db.connection() as conn:
+                conn.execute(
+                    "UPDATE jobs SET status = 'DELETE_FAILED', error_msg = ? WHERE id = ?",
+                    (str(e), job_id)
+                )
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload")
@@ -301,6 +483,7 @@ async def stream_video(request: Request, path: str = Query(...)):
     """Streams video from local storage with HTTP Range support for HTML5 video playback and timeline seeking."""
     try:
         clean_path = path.replace("\\", "/").strip()
+
         video_path = Path(clean_path)
         
         # If relative or filename only, check inside MEDIA_DIR / uploads / clips
@@ -369,6 +552,7 @@ async def stream_video(request: Request, path: str = Query(...)):
         LOGGER.error(f"Failed to stream video {path}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/jobs")
 def list_jobs():
     jobs = sqlite_db.get_jobs()
@@ -384,11 +568,52 @@ def get_job_status(job_id: str):
     job_record = sqlite_db.get_job(job_id)
     if not job_record:
         raise HTTPException(status_code=404, detail="Job not found.")
-        
     progress_info = job_manager.get_job_progress(job_id)
-    # Combine static db details with dynamic tracker details
     details = {**job_record, **progress_info}
     return details
+
+@app.get("/api/jobs/{job_id}/diagnostics")
+def get_job_diagnostics(job_id: str):
+    job_record = sqlite_db.get_job(job_id)
+    if not job_record:
+        raise HTTPException(status_code=404, detail="Job not found.")
+        
+    diag_str = job_record.get("diagnostics")
+    parsed_diag = {}
+    if diag_str:
+        try:
+            parsed_diag = json.loads(diag_str)
+        except Exception:
+            parsed_diag = {"raw": diag_str}
+            
+    stats = {}
+    if hasattr(dispatcher, "job_stats") and job_id in dispatcher.job_stats:
+        stats = dispatcher.job_stats[job_id]
+
+    with sqlite_db.connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cur_t = conn.execute("SELECT count(*) as count FROM tracks WHERE job_id = ?", (job_id,))
+        track_count = cur_t.fetchone()["count"]
+        cur_d = conn.execute("SELECT count(*) as count FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?", (job_id,))
+        det_count = cur_d.fetchone()["count"]
+
+    vector_count = 0
+    try:
+        vis_res = vector_db.visual_coll.get(where={"job_id": job_id})
+        vector_count = len(vis_res.get("ids", []))
+    except Exception:
+        pass
+
+    return {
+        "job_id": job_id,
+        "status": job_record["status"],
+        "profile": job_record.get("profile"),
+        "tracks_count": track_count,
+        "detections_count": det_count,
+        "vectors_count": vector_count,
+        "stored_diagnostics": parsed_diag,
+        "runtime_stats": stats
+    }
 
 @app.get("/api/jobs/{job_id}/cameras")
 def get_job_cameras(job_id: str):
@@ -396,7 +621,6 @@ def get_job_cameras(job_id: str):
 
 @app.get("/api/jobs/{job_id}/tracks")
 def get_job_tracks(job_id: str):
-    # Fetch all tracks registered for this job
     with sqlite_db.connection() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM tracks WHERE job_id = ? ORDER BY start_time DESC", (job_id,))
@@ -416,14 +640,13 @@ async def execute_search(
     query_file: Optional[UploadFile] = File(None),
     saved_person_id: Optional[str] = Form(None),
     camera_id: Optional[str] = Form(None),
+    object_type: Optional[str] = Form(None),
     job_id: Optional[str] = Form(None),
     scope: str = Form("current_investigation"),  # "current_investigation" | "current_video" | "global"
-    top_k: int = Form(20)
+    top_k: int = Form(20),
+    strict_gate: bool = Form(True)
 ):
-    # Scope check and configuration
-    scope = scope.lower().strip()
     filters = {}
-
     if scope == "current_investigation":
         if not job_id:
             raise HTTPException(status_code=400, detail="job_id is required for investigation-scoped search.")
@@ -439,6 +662,13 @@ async def execute_search(
         pass  # No job_id/camera_id filters applied to ChromaDB visual/face query
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported search scope: {scope}")
+    if object_type:
+        normalized_type = object_type.lower().strip()
+        if normalized_type not in {"person", "vehicle"}:
+            raise HTTPException(status_code=400, detail="Unsupported object_type filter.")
+        filters["entity_type"] = normalized_type
+    if not strict_gate and not SEARCH_DEBUG:
+        raise HTTPException(status_code=403, detail="Diagnostic gate bypass requires AICATCH_SEARCH_DEBUG=true.")
         
     qtype = qtype.lower().strip()
     
@@ -451,7 +681,9 @@ async def execute_search(
             
         # 2. Image Query Search (CLIP visual matching with internal face re-ranking fallback)
         elif qtype in ["image", "face"] and query_file:
-            img = Image.open(query_file.file)
+            img = ImageOps.exif_transpose(Image.open(query_file.file)).convert("RGB")
+            if img.width <= 0 or img.height <= 0:
+                raise HTTPException(status_code=400, detail="The uploaded image has invalid dimensions.")
             emb = gpu_scheduler.embed_image(img)
             
             # Detect entity type of the query image for collection-scoped search
@@ -486,7 +718,8 @@ async def execute_search(
                 emb, filters, top_k, 
                 entity_type=entity_type, 
                 face_embedding=emb_face, 
-                face_status=face_status
+                face_status=face_status,
+                strict_gate=strict_gate,
             )
             
             # Inject face matching diagnostic info to show in the UI
@@ -535,8 +768,13 @@ async def execute_search(
                 match["camera_name"] = cam_names.get(m_cam_id, "Unknown Camera")
                 enriched_matches.append(match)
                 
+        if SEARCH_DEBUG and qtype == "image":
+            LOGGER.info("IMAGE_SEARCH_TRACE_FINAL %s", getattr(search_layer, "last_image_search_diagnostics", {}))
         return enriched_matches
             
+    except VisualIndexEmptyError as e:
+        LOGGER.info("IMAGE_SEARCH_INDEX_EMPTY %s", e.diagnostics)
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         LOGGER.error(f"Search query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

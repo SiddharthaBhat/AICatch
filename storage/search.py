@@ -5,7 +5,7 @@ from SQLite to provide a structured API for the frontend and matcher.
 """
 
 import logging
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 from pathlib import Path
 
 from storage.sqlite_db import SQLiteDatabase
@@ -13,6 +13,12 @@ from storage.vector_db import VectorDatabase
 from storage.media_storage import MediaStorage
 
 LOGGER = logging.getLogger(__name__)
+
+class VisualIndexEmptyError(RuntimeError):
+    """The selected investigation has no vectors in its active visual space."""
+    def __init__(self, diagnostics: Dict[str, Any]):
+        self.diagnostics = diagnostics
+        super().__init__("This investigation has no visual embeddings. Re-index with the active visual model.")
 
 def parse_query_text(query: Optional[str]) -> Dict[str, Any]:
     """Helper to parse a text query into target entity type, requested colors, and action verbs."""
@@ -137,46 +143,120 @@ class SearchLayer:
         top_k: int = 20,
         entity_type: Optional[str] = None,
         face_embedding: Optional[List[float]] = None,
-        face_status: Optional[str] = None
+        face_status: Optional[str] = None,
+        strict_gate: bool = True,
+        reid_embedding: Optional[List[float]] = None,
+        enable_rrf: bool = False,
+        rrf_k: int = 60,
+        clip_weight: float = 0.7,
+        reid_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
-        """Performs a visual query-by-image search matching image crop CLIP vectors, with optional internal face-assisted re-ranking."""
+        """Run object-crop image retrieval and return ranked matches with full multi-signal breakdown."""
         search_filters = dict(filters or {})
         if entity_type is not None and "entity_type" not in search_filters:
             search_filters["entity_type"] = entity_type
             
-        # Stage 1: Candidate Retrieval
+        index_info = self.vector.describe_visual_index(search_filters)
+        diagnostics: Dict[str, Any] = {
+            "collection": index_info["collection"],
+            "indexed_vectors": index_info["total"],
+            "indexed_by_object_type": index_info["by_object_type"],
+            "indexed_by_camera": index_info["by_camera"],
+            "embedding_model": index_info["embedding_model"],
+            "embedding_version": index_info["embedding_version"],
+            "query_embedding_dimension": len(query_embedding),
+            "query_embedding_norm": round(sum(value * value for value in query_embedding) ** 0.5, 6),
+            "filters": search_filters,
+        }
+        self.last_image_search_diagnostics = diagnostics
+        if not index_info["total"]:
+            diagnostics["search_state"] = "NO_DATA"
+            raise VisualIndexEmptyError(diagnostics)
+
+        # Stage 1: Candidate Retrieval (CLIP Collection)
         candidate_k = max(100, top_k * 4)
         vector_matches = self.vector.query_visual_embeddings(
             query_embedding=query_embedding,
             top_k=candidate_k,
             filters=search_filters
         )
+        diagnostics["raw_candidate_count"] = len(vector_matches)
+        diagnostics["raw_top_scores"] = [round(float(match["similarity"]), 4) for match in vector_matches[:10]]
+        
+        # Optional Re-ID Query for RRF Rank Fusion
+        reid_scores_by_track: Dict[str, float] = {}
+        reid_ranks_by_track: Dict[str, int] = {}
+        if enable_rrf and reid_embedding is not None:
+            try:
+                reid_matches = self.vector.query_reid_embeddings(
+                    query_embedding=reid_embedding,
+                    top_k=candidate_k,
+                    filters=search_filters
+                )
+                for r_rank, r_match in enumerate(reid_matches, start=1):
+                    r_meta = r_match.get("metadata", {})
+                    t_id = r_meta.get("track_id")
+                    if t_id and t_id not in reid_ranks_by_track:
+                        reid_ranks_by_track[t_id] = r_rank
+                        reid_scores_by_track[t_id] = float(r_match["similarity"])
+            except Exception as re_err:
+                LOGGER.debug(f"Re-ID collection query note: {re_err}")
+        
+        if not vector_matches:
+            diagnostics["search_state"] = "NO_CANDIDATES"
+            LOGGER.info("IMAGE_SEARCH_STATE: NO_CANDIDATES %s", diagnostics)
+            return []
         
         # Stage 2: Inflate and Re-rank (Visual matches only first)
         from config import IMAGE_MATCH_THRESHOLD, IMAGE_VISUAL_WEIGHT, IMAGE_FACE_WEIGHT, FACE_MATCH_THRESHOLD, FINAL_SCORE_MIN_IMAGE
-        re_ranked = self._inflate_metadata_and_re_rank(
+        re_ranked, below_threshold = self._inflate_metadata_and_re_rank_with_below_gate(
             vector_matches,
             query_colors=None,
             is_face=False,
             threshold=IMAGE_MATCH_THRESHOLD,
-            final_score_threshold=FINAL_SCORE_MIN_IMAGE,
+            final_score_threshold=FINAL_SCORE_MIN_IMAGE if strict_gate else 0.0,
             expected_entity_type=entity_type
         )
+
+        # Stage 2b: Apply Reciprocal Rank Fusion (RRF) if enabled
+        if enable_rrf and reid_ranks_by_track:
+            for c_rank, match in enumerate(re_ranked, start=1):
+                t_id = match.get("track_id")
+                clip_rrf = clip_weight / (rrf_k + c_rank)
+                r_rank = reid_ranks_by_track.get(t_id, candidate_k + 1)
+                reid_rrf = reid_weight / (rrf_k + r_rank)
+                rrf_score = round(clip_rrf + reid_rrf, 5)
+
+                reid_sim = reid_scores_by_track.get(t_id)
+                match["rrf_score"] = rrf_score
+                if "signal_breakdown" in match:
+                    match["signal_breakdown"]["reid"] = reid_sim
+                    match["signal_breakdown"]["rrf"] = rrf_score
+            re_ranked = sorted(re_ranked, key=lambda x: x.get("rrf_score", x["similarity"]), reverse=True)
+
+        diagnostics["post_gate_count"] = len(re_ranked)
+        diagnostics["below_threshold_count"] = len(below_threshold)
+        diagnostics["gate_threshold"] = FINAL_SCORE_MIN_IMAGE if strict_gate else 0.0
+        
+        # Determine Search State
+        if not re_ranked and below_threshold:
+            diagnostics["search_state"] = "BELOW_THRESHOLD"
+        elif re_ranked:
+            diagnostics["search_state"] = "RESULTS"
+        else:
+            diagnostics["search_state"] = "NO_CANDIDATES"
+            
+        LOGGER.info("IMAGE_SEARCH_TRACE state=%s %s", diagnostics["search_state"], diagnostics)
         
         # Stage 3: Optional Face-assisted Hybrid Re-ranking
-        # Only use face signal if face was detected and is of GOOD or PARTIAL quality
         use_face = face_embedding is not None and face_status in ["GOOD_FACE", "PARTIAL_FACE"]
         
         if use_face and re_ranked:
-            # 1. Fetch face similarity scores for the query face
             face_scores = self.search_face_internal(face_embedding, filters, top_k=100)
-            
-            # 2. Identify which retrieved tracks have indexed face crops
             track_uuids = {m["track_id"] for m in re_ranked if m.get("track_id")}
             face_tracks = set()
             if track_uuids:
                 try:
-                    # Retrieve all matching track_id face crops to check index presence
                     face_res = self.vector.face_coll.get(
                         where={"track_id": {"$in": list(track_uuids)}} if len(track_uuids) > 1 else {"track_id": list(track_uuids)[0]},
                         include=["metadatas"]
@@ -188,17 +268,12 @@ class SearchLayer:
                 except Exception as db_err:
                     LOGGER.debug(f"Failed to query face presence: {db_err}")
             
-            # 3. Calculate final hybrid scores
             for match in re_ranked:
                 track_uuid = match.get("track_id")
                 S_vis = match["similarity"]
                 
                 if track_uuid in face_tracks:
-                    # Track has face crops: apply weighted visual + face similarity
                     S_face = face_scores.get(track_uuid, 0.0)
-                    
-                    # Section 11: Weak/mismatched face shouldn't override strong visual.
-                    # We only combine if face similarity is above threshold, otherwise face similarity is 0.0 (penalizing mismatch).
                     if S_face < FACE_MATCH_THRESHOLD:
                         S_face = 0.0
                         
@@ -206,21 +281,23 @@ class SearchLayer:
                     match["similarity"] = round(final_score, 4)
                     match["face_score"] = round(S_face, 4)
                     match["match_type"] = "face_assisted"
+                    if "signal_breakdown" in match:
+                        match["signal_breakdown"]["face"] = round(S_face, 4)
+                        match["signal_breakdown"]["composite"] = round(final_score, 4)
                 else:
-                    # Neutral fallback: track has no indexed face crops
                     match["similarity"] = S_vis
                     match["face_score"] = 0.0
                     match["match_type"] = "visual_only"
             
-            # Re-sort descending by final hybrid similarity score
             re_ranked = sorted(re_ranked, key=lambda x: x["similarity"], reverse=True)
         else:
-            # Fallback/Visual-only indicators
             for match in re_ranked:
                 match["match_type"] = "visual_only"
                 match["face_score"] = 0.0
                 
+        self.last_below_threshold_results = below_threshold[:top_k]
         return re_ranked[:top_k]
+
 
     def search_by_face(
         self,
@@ -566,10 +643,6 @@ class SearchLayer:
                 temporal_boost
             )
             
-            # Post-rerank relevance gate: reject weak composite matches
-            if final_score_threshold > 0 and final_score < final_score_threshold:
-                continue
-            
             result_item = {
                 "similarity": round(final_score, 4),
                 "semantic_score": round(semantic_score, 4),
@@ -586,8 +659,17 @@ class SearchLayer:
                 "video_source": video_source,
                 "plate_text": track["plate_text"],
                 "video_clip_path": str(clip_path) if clip_path.exists() else None,
-                
-                # Expose colors for transparency in UI
+                "signal_breakdown": {
+                    "visual": round(semantic_score, 4),
+                    "reid": None,
+                    "face": None,
+                    "color": round(attribute_score, 4),
+                    "quality": round(quality_score, 4),
+                    "temporal": round(temporal_boost, 4),
+                    "camera": "PASS",
+                    "ocr": track.get("plate_text"),
+                    "composite": round(final_score, 4)
+                },
                 "dominant_upper_color": target_det.get("dominant_upper_color"),
                 "secondary_upper_color": target_det.get("secondary_upper_color"),
                 "dominant_lower_color": target_det.get("dominant_lower_color"),
@@ -595,10 +677,47 @@ class SearchLayer:
                 "color_confidence": target_det.get("color_confidence")
             }
             
-            # Group by track_uuid, keep the highest-scoring detection instance
+            # Post-rerank relevance gate: reject weak composite matches
+            if final_score_threshold > 0 and final_score < final_score_threshold:
+                continue
+            
             if track_uuid not in best_matches_by_track or final_score > best_matches_by_track[track_uuid]["similarity"]:
                 best_matches_by_track[track_uuid] = result_item
                 
-        # Sort desc by final_score
         sorted_results = sorted(best_matches_by_track.values(), key=lambda x: x["similarity"], reverse=True)
         return sorted_results
+
+    def _inflate_metadata_and_re_rank_with_below_gate(
+        self,
+        vector_matches: List[Dict[str, Any]],
+        query_colors: Optional[List[str]] = None,
+        is_face: bool = False,
+        query_action: Optional[str] = None,
+        threshold: float = 0.0,
+        final_score_threshold: float = 0.0,
+        expected_entity_type: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Separates candidates into passed results and below-threshold (low confidence) results."""
+        all_candidates = self._inflate_metadata_and_re_rank(
+            vector_matches=vector_matches,
+            query_colors=query_colors,
+            is_face=is_face,
+            query_action=query_action,
+            threshold=0.0,
+            final_score_threshold=0.0,
+            expected_entity_type=expected_entity_type
+        )
+        passed = []
+        below = []
+        for cand in all_candidates:
+            if cand["similarity"] >= final_score_threshold and cand.get("semantic_score", 0.0) >= threshold:
+                passed.append(cand)
+            else:
+                low_cand = dict(cand)
+                low_cand["is_low_confidence"] = True
+                low_cand["status"] = "BELOW_THRESHOLD"
+                low_cand["diagnostic_label"] = "Below Relevance Threshold"
+                below.append(low_cand)
+                
+        return passed, below
+

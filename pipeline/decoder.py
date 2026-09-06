@@ -28,7 +28,12 @@ class VideoStreamDecoder(threading.Thread):
         source_path: str,
         is_live: bool = False,
         target_width: int = 960,
-        target_fps: float = None
+        target_fps: float = None,
+        enable_motion_gating: bool = False,
+        idle_fps: float = 0.5,
+        motion_threshold: float = 0.005,
+        pre_event_buffer_sec: float = 2.0,
+        post_event_buffer_sec: float = 4.0,
     ):
         super().__init__(name=f"Decoder-{camera_id}", daemon=True)
         self.camera_id = camera_id
@@ -36,6 +41,11 @@ class VideoStreamDecoder(threading.Thread):
         self.is_live = is_live
         self.target_width = target_width
         self.target_fps = target_fps
+        self.enable_motion_gating = enable_motion_gating
+        self.idle_fps = idle_fps
+        self.motion_threshold = motion_threshold
+        self.pre_event_buffer_sec = pre_event_buffer_sec
+        self.post_event_buffer_sec = post_event_buffer_sec
         
         # Bounded frame queue: holds (frame_idx, timestamp, frame_bgr)
         self.frame_queue = queue.Queue(maxsize=GPU_QUEUE_LIMIT)
@@ -59,6 +69,7 @@ class VideoStreamDecoder(threading.Thread):
         self.is_connected = False
         self.failed = False
         self.error_msg = ""
+        self.has_finished = False
         
         # FFmpeg executable resolve
         self.ffmpeg_exe = self._resolve_ffmpeg()
@@ -151,6 +162,7 @@ class VideoStreamDecoder(threading.Thread):
                 if not self.is_live:
                     break
                 time.sleep(2.0)
+        self.has_finished = True
 
     def _decode_loop(self) -> None:
         """Spawns FFmpeg and pipes BGR frames into the queue."""
@@ -179,6 +191,7 @@ class VideoStreamDecoder(threading.Thread):
             bufsize=self.target_width * self.target_height * 3 * 2,  # 2 frames buffer
             startupinfo=startupinfo
         )
+        self.proc = proc
         
         self.is_connected = True
         frame_size = self.target_width * self.target_height * 3
@@ -211,45 +224,59 @@ class VideoStreamDecoder(threading.Thread):
                 frame_bgr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
                     (self.target_height, self.target_width, 3)
                 )
+                data_packet = (frame_idx, timestamp, frame_bgr)
                 
-                # Dynamic Adaptive Sampling check
-                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-                resized = cv2.resize(gray, (160, 90))
-                resized_blur = cv2.GaussianBlur(resized, (5, 5), 0)
-                
-                if not hasattr(self, "last_gray_frame"):
-                    self.last_gray_frame = resized_blur
-                    self.last_pushed_time = 0.0
-                    self.motion_cooldown_until = 0.0
-                    
-                is_static = True
-                if self.last_gray_frame is not None:
-                    diff = cv2.absdiff(self.last_gray_frame, resized_blur)
-                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                    changed_ratio = cv2.countNonZero(thresh) / thresh.size
-                    
-                    # Slowly update the background reference frame
-                    cv2.addWeighted(self.last_gray_frame, 0.95, resized_blur, 0.05, 0, dst=self.last_gray_frame)
-                    
-                    if changed_ratio >= 0.005:
-                        is_static = False
-                        self.motion_cooldown_until = timestamp + 4.0
-                else:
-                    self.last_gray_frame = resized_blur
-                    is_static = False
-                    
+                # Adaptive Motion Gating and Forensic Event Buffer
                 should_push = True
-                in_motion = (timestamp < self.motion_cooldown_until) or (not is_static)
-                
-                if not in_motion:
-                    # In static scenes, limit pushes to once every 4.0s (heartbeat)
-                    if (timestamp - self.last_pushed_time) < 4.0:
-                        should_push = False
-                        
+                if self.enable_motion_gating:
+                    if not hasattr(self, "_pre_event_buffer"):
+                        import collections
+                        buf_len = max(2, int(self.pre_event_buffer_sec * self.target_fps))
+                        self._pre_event_buffer = collections.deque(maxlen=buf_len)
+                        self._in_active_event = False
+
+                    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                    resized = cv2.resize(gray, (160, 90))
+                    resized_blur = cv2.GaussianBlur(resized, (5, 5), 0)
+                    
+                    if not hasattr(self, "last_gray_frame") or self.last_gray_frame is None:
+                        self.last_gray_frame = resized_blur
+                        self.last_pushed_time = 0.0
+                        self.motion_cooldown_until = 0.0
+                        is_static = False
+                    else:
+                        diff = cv2.absdiff(self.last_gray_frame, resized_blur)
+                        _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                        changed_ratio = cv2.countNonZero(thresh) / thresh.size
+                        cv2.addWeighted(self.last_gray_frame, 0.95, resized_blur, 0.05, 0, dst=self.last_gray_frame)
+
+                        if changed_ratio >= self.motion_threshold:
+                            is_static = False
+                            self.motion_cooldown_until = timestamp + self.post_event_buffer_sec
+                        else:
+                            is_static = (timestamp > self.motion_cooldown_until)
+
+                    if not is_static:
+                        # Event active: flush pre-event buffer if just triggered
+                        if not self._in_active_event:
+                            self._in_active_event = True
+                            while self._pre_event_buffer:
+                                buffered_pkt = self._pre_event_buffer.popleft()
+                                if not self.frame_queue.full():
+                                    self.frame_queue.put(buffered_pkt)
+                        should_push = True
+                    else:
+                        self._in_active_event = False
+                        # Sample at idle FPS rate during static periods
+                        idle_interval = 1.0 / max(0.1, self.idle_fps)
+                        if (timestamp - self.last_pushed_time) >= idle_interval:
+                            should_push = True
+                        else:
+                            should_push = False
+                            self._pre_event_buffer.append(data_packet)
+
                 if should_push:
                     self.last_pushed_time = timestamp
-                    data_packet = (frame_idx, timestamp, frame_bgr)
-                    
                     # Apply backpressure / dropping strategy
                     if self.is_live:
                         if self.frame_queue.full():
@@ -263,8 +290,7 @@ class VideoStreamDecoder(threading.Thread):
                         self.frame_queue.put(data_packet, block=True)
                         if frame_idx == 1:
                             LOGGER.info(f"MILESTONE: FIRST FRAME ENTERS QUEUE at {time.time()}")
-                else:
-                    self.frames_dropped += 1
+
                     
         finally:
             proc.terminate()
@@ -293,6 +319,12 @@ class VideoStreamDecoder(threading.Thread):
         with self._pause_cond:
             self.paused = False
             self._pause_cond.notify_all()
+        # Kill FFmpeg subprocess to unblock stdout.read
+        if hasattr(self, "proc") and self.proc:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
         # Flush queue to unblock any blocking puts
         try:
             while not self.frame_queue.empty():

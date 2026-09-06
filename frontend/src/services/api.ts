@@ -164,6 +164,7 @@ export const apiService = {
     queryFile?: File;
     savedPersonId?: string;
     cameraId?: string;
+    objectType?: string;
     jobId?: string;
     topK?: number;
   }): Promise<any[]> {
@@ -173,6 +174,7 @@ export const apiService = {
     if (params.queryFile) formData.append("query_file", params.queryFile);
     if (params.savedPersonId) formData.append("saved_person_id", params.savedPersonId);
     if (params.cameraId) formData.append("camera_id", params.cameraId);
+    if (params.objectType) formData.append("object_type", params.objectType);
     if (params.jobId) formData.append("job_id", params.jobId);
     if (params.topK) formData.append("top_k", params.topK.toString());
 

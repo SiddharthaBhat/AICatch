@@ -252,12 +252,16 @@ class SQLiteDatabase:
                 conn.execute("ALTER TABLE tracks ADD COLUMN label TEXT")
                 LOGGER.info("Database Migration: Added column 'label' to 'tracks' table.")
 
-            # Migration check for jobs table (investigation_type column)
+            # Migration check for jobs table (investigation_type & diagnostics columns)
             cursor_j = conn.execute("PRAGMA table_info(jobs)")
             existing_cols_j = {row[1] for row in cursor_j.fetchall()}
             if "investigation_type" not in existing_cols_j:
                 conn.execute("ALTER TABLE jobs ADD COLUMN investigation_type TEXT DEFAULT 'single_video'")
                 LOGGER.info("Database Migration: Added column 'investigation_type' to 'jobs' table.")
+            if "diagnostics" not in existing_cols_j:
+                conn.execute("ALTER TABLE jobs ADD COLUMN diagnostics TEXT")
+                LOGGER.info("Database Migration: Added column 'diagnostics' to 'jobs' table.")
+
 
             # Migration check for folders table (job_id column)
             cursor_f = conn.execute("PRAGMA table_info(folders)")
@@ -349,14 +353,21 @@ class SQLiteDatabase:
         with self.connection() as conn:
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
-    def update_job_status(self, job_id: str, status: str, error_msg: Optional[str] = None) -> None:
+    def update_job_status(self, job_id: str, status: str, error_msg: Optional[str] = None, diagnostics: Optional[str] = None) -> None:
         """Update job execution state."""
         now = time.time()
         with self.connection() as conn:
-            conn.execute(
-                "UPDATE jobs SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?",
-                (status, error_msg, now, job_id)
-            )
+            if diagnostics is not None:
+                conn.execute(
+                    "UPDATE jobs SET status = ?, error_msg = ?, diagnostics = ?, updated_at = ? WHERE id = ?",
+                    (status, error_msg, diagnostics, now, job_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE jobs SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?",
+                    (status, error_msg, now, job_id)
+                )
+
 
     def update_job_progress(self, job_id: str, processed_sec: float, duration_sec: float, fps: float) -> None:
         """Update indexing performance metrics."""

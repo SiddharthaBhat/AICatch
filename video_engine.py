@@ -92,10 +92,15 @@ def _device() -> str:
 def _get_detector() -> YOLO:
     global _detector
     if _detector is None:
-        if Path(YOLO_MODEL_PATH).name not in {"yolov8n.pt", "yolo11n.pt"}:
-            raise ValueError("Indexing requires a lightweight YOLO nano model (yolov8n.pt or yolo11n.pt)")
+        model_path = Path(YOLO_MODEL_PATH)
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Configured detector is unavailable: {model_path}. "
+                "Keep the last-known-good model active or install the benchmark candidate first."
+            )
         device = _device()
-        _detector = YOLO(YOLO_MODEL_PATH)
+        LOGGER.info("Loading configured detector %s on %s", model_path.name, device)
+        _detector = YOLO(str(model_path))
         _detector.to(device)
         if device == "cuda":
             _detector.model.half()

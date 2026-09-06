@@ -11,6 +11,8 @@ import threading
 import hashlib
 from pathlib import Path
 
+import sqlite3
+import json
 from config import PROCESSING_PROFILES
 from storage.sqlite_db import SQLiteDatabase
 from pipeline.decoder import VideoStreamDecoder
@@ -216,28 +218,162 @@ class JobManager:
                 # Update status in SQLite if it wasn't running in memory
                 self.sqlite.update_job_status(job_id, "cancelled")
 
-    def complete_job(self, job_id: str) -> None:
-        """Marks a job as successfully completed and cleans up its decoders."""
+    def update_job_stage(self, job_id: str, stage: str, error_msg: Optional[str] = None, diagnostics: Optional[Dict[str, Any]] = None) -> None:
+        """Updates the fine-grained job state machine stage."""
         with self.lock:
             job = self.active_jobs.get(job_id)
             if job:
                 with job.lock:
-                    job.status = "completed"
-                    self.sqlite.update_job_status(job_id, "completed")
-                    LOGGER.info(f"Completed job {job_id} successfully.")
-                self.cleanup_job_resources(job_id)
+                    job.status = stage
+                    if error_msg:
+                        job.error_msg = error_msg
+            diag_json = json.dumps(diagnostics) if diagnostics else None
+            self.sqlite.update_job_status(job_id, stage, error_msg, diag_json)
+            LOGGER.info("JOB_STAGE_TRANSITION job_id=%s stage=%s", job_id, stage)
 
-    def fail_job(self, job_id: str, error_msg: str) -> None:
+    def complete_job(
+        self,
+        job_id: str,
+        vector_db: Optional[Any] = None,
+        dispatcher: Optional[Any] = None
+    ) -> bool:
+        """Transitions job through completion stages with vector write and read-back verification."""
+        with self.lock:
+            job = self.active_jobs.get(job_id)
+            
+            # 1. Transition to DETECTION_COMPLETE & TRACKING_COMPLETE
+            self.update_job_stage(job_id, "TRACKING_COMPLETE")
+            
+            # 2. Wait for dispatcher to flush all queued items to SQLite & Chroma
+            self.update_job_stage(job_id, "EMBEDDING_COMPLETE")
+            if dispatcher:
+                dispatcher.flush_and_wait(timeout=15.0)
+            self.update_job_stage(job_id, "PERSISTENCE_COMPLETE")
+            
+            # 3. Perform Vector write, read-back, and Lineage verification
+            verification_errors = []
+            tracks = []
+            detections = []
+            with self.sqlite.connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cur_t = conn.execute("SELECT * FROM tracks WHERE job_id = ?", (job_id,))
+                tracks = [dict(r) for r in cur_t.fetchall()]
+                
+                cur_d = conn.execute(
+                    "SELECT d.* FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?",
+                    (job_id,)
+                )
+                detections = [dict(r) for r in cur_d.fetchall()]
+
+            # Lineage verification
+            for det in detections[:10]:
+                if not det.get("track_id"):
+                    verification_errors.append(f"Detection {det.get('id')} has no track_id")
+                if not det.get("crop_path"):
+                    verification_errors.append(f"Detection {det.get('id')} has no crop_path")
+                elif not Path(det["crop_path"]).exists():
+                    LOGGER.warning("Crop file not found on disk: %s", det["crop_path"])
+
+            # Vector DB verification
+            indexed_vectors_count = 0
+            reid_vectors_count = 0
+            face_vectors_count = 0
+            
+            if vector_db is None:
+                try:
+                    from storage.vector_db import VectorDatabase
+                    from config import CHROMA_PERSIST_DIR
+                    vector_db = VectorDatabase(CHROMA_PERSIST_DIR)
+                except Exception as db_init_err:
+                    LOGGER.debug(f"Could not initialize VectorDatabase fallback: {db_init_err}")
+
+            if vector_db is not None:
+                try:
+                    vis_res = vector_db.visual_coll.get(where={"job_id": job_id}, include=["metadatas", "embeddings"])
+                    indexed_vectors_count = len(vis_res.get("ids", []))
+                    
+                    try:
+                        reid_res = vector_db.reid_coll.get(where={"job_id": job_id})
+                        reid_vectors_count = len(reid_res.get("ids", []))
+                    except Exception:
+                        reid_vectors_count = 0
+                        
+                    try:
+                        face_res = vector_db.face_coll.get(where={"job_id": job_id})
+                        face_vectors_count = len(face_res.get("ids", []))
+                    except Exception:
+                        face_vectors_count = 0
+                    
+                    if indexed_vectors_count == 0 and len(detections) > 0:
+                        verification_errors.append("Zero visual vector embeddings persisted in ChromaDB despite detections present")
+                    elif indexed_vectors_count == 0 and len(tracks) == 0:
+                        verification_errors.append("No tracks or visual vectors were generated during indexing")
+                    elif indexed_vectors_count > 0:
+                        # Verify read-back retrieval for a sample
+                        sample_id = vis_res["ids"][0]
+                        sample_meta = vis_res["metadatas"][0]
+                        if sample_meta.get("job_id") != job_id:
+                            verification_errors.append(f"Vector metadata mismatch for sample {sample_id}")
+                except Exception as ve:
+                    verification_errors.append(f"Chroma verification query failed: {ve}")
+            else:
+                verification_errors.append("Vector database instance unavailable for verification")
+
+            # Collect comprehensive Ingestion Diagnostics
+            stats = {}
+            if dispatcher and hasattr(dispatcher, "job_stats"):
+                stats = dispatcher.job_stats.get(job_id, {})
+                
+            total_duration = 0.0
+            if job:
+                with job.lock:
+                    for dec in job.decoders.values():
+                        total_duration += dec.duration_sec
+                        
+            diagnostics = {
+                "job_id": job_id,
+                "status": "INDEXED" if not verification_errors else "FAILED",
+                "tracks_count": len(tracks),
+                "detections_count": len(detections),
+                "crops_count": stats.get("crops", len(detections)),
+                "embedding_attempts": stats.get("embedding_attempts", indexed_vectors_count),
+                "successful_embeddings": stats.get("successful_embeddings", indexed_vectors_count),
+                "failed_embeddings": stats.get("failed_embeddings", 0),
+                "vectors_inserted": indexed_vectors_count,
+                "vectors_reid": reid_vectors_count,
+                "vectors_face": face_vectors_count,
+                "vectors_verified": indexed_vectors_count if not verification_errors else 0,
+                "collection_name": vector_db.visual_coll.name if vector_db else "N/A",
+                "collection_count_after": vector_db.visual_coll.count() if vector_db else 0,
+                "duration_sec": total_duration,
+                "verification_errors": verification_errors
+            }
+
+            if verification_errors:
+                err_msg = "; ".join(verification_errors)
+                LOGGER.error("Job %s failed verification: %s", job_id, err_msg)
+                self.fail_job(job_id, err_msg, diagnostics=diagnostics)
+                return False
+                
+            # Set state to INDEXED
+            self.update_job_stage(job_id, "INDEXED", diagnostics=diagnostics)
+            LOGGER.info("INGESTION_DIAGNOSTICS %s", json.dumps(diagnostics))
+            self.cleanup_job_resources(job_id)
+            return True
+
+
+    def fail_job(self, job_id: str, error_msg: str, diagnostics: Optional[Dict[str, Any]] = None) -> None:
         """Marks a job as failed and cleans up its decoders."""
         with self.lock:
             job = self.active_jobs.get(job_id)
             if job:
                 with job.lock:
-                    job.status = "failed"
+                    job.status = "FAILED"
                     job.error_msg = error_msg
-                    self.sqlite.update_job_status(job_id, "failed", error_msg)
-                    LOGGER.error(f"Job {job_id} failed: {error_msg}")
-                self.cleanup_job_resources(job_id)
+            diag_json = json.dumps(diagnostics) if diagnostics else None
+            self.sqlite.update_job_status(job_id, "FAILED", error_msg, diag_json)
+            LOGGER.error(f"Job {job_id} failed: {error_msg}")
+            self.cleanup_job_resources(job_id)
 
     def cleanup_job_resources(self, job_id: str) -> None:
         """Terminates and joins all decoder threads and cleans memory maps."""
@@ -257,6 +393,13 @@ class JobManager:
                 self.sqlite.update_camera_metadata(cam_id, "inactive", f"{decoder.width}x{decoder.height}", decoder.fps)
             except Exception as e:
                 LOGGER.error(f"Error stopping decoder for camera {cam_id}: {e}")
+                
+        # Remove from active jobs mapping
+        with self.lock:
+            self.active_jobs.pop(job_id, None)
+            
+        LOGGER.info(f"Finished resource cleanup for job {job_id}.")
+
                 
         # Remove from active jobs mapping
         with self.lock:

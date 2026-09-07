@@ -296,59 +296,6 @@ class VectorDatabase:
                 "distance": float(dist),
                 "similarity": similarity
             })
-
-    def query_face_embeddings(
-        self,
-        query_embedding: List[float],
-        top_k: int = 20,
-        filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """Search the face collection for matching facial embeddings."""
-        where = self._build_where_filter(filters)
-        results = self.face_coll.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where,
-            include=["metadatas", "distances"]
-        )
-        return self._format_results(results)
-
-    # ==============================================================================
-    # Helpers
-    # ==============================================================================
-
-    def _build_where_filter(self, filters: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Transforms a key-value dictionary into a valid ChromaDB where-filter query."""
-        if not filters:
-            return None
-        
-        # Keep it simple for single filter keys, format complex filters if needed
-        # ChromaDB syntax for multiple conditions: {"$and": [{"camera_id": "cam1"}, {"job_id": "job1"}]}
-        clean_filters = {k: v for k, v in filters.items() if v is not None}
-        if not clean_filters:
-            return None
-            
-        if len(clean_filters) == 1:
-            return clean_filters
-            
-        return {"$and": [{k: v} for k, v in clean_filters.items()]}
-
-    def _format_results(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Formats raw ChromaDB dictionary outputs into clean, standardized matching maps."""
-        formatted = []
-        ids = results.get("ids", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        
-        for item_id, meta, dist in zip(ids, metadatas, distances):
-            # Cosine similarity = 1.0 - Cosine Distance
-            similarity = round(1.0 - float(dist), 4)
-            formatted.append({
-                "id": item_id,
-                "metadata": meta,
-                "distance": float(dist),
-                "similarity": similarity
-            })
             
         # Sort desc by similarity
         formatted.sort(key=lambda x: x["similarity"], reverse=True)

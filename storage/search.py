@@ -624,8 +624,14 @@ class SearchLayer:
                     # Confident color mismatch → heavy penalty (near-zero)
                     # Low confidence → mild penalty (uncertain, don't punish too hard)
                     attribute_score = max(0.0, 0.20 * (1.0 - conf))  # 0.00–0.20
+                weight_semantic = SEARCH_WEIGHT_SEMANTIC
+                weight_attr = SEARCH_WEIGHT_ATTRIBUTE
+                weight_quality = SEARCH_WEIGHT_QUALITY
             else:
                 attribute_score = 1.0 # Neutral if no colors queried
+                weight_semantic = 0.90
+                weight_attr = 0.0
+                weight_quality = 0.05
                 
             # 4. Quality Score
             quality_score = target_det.get("quality_score", 0.0) or 0.0
@@ -637,9 +643,9 @@ class SearchLayer:
             
             # Combined Transparent Score
             final_score = (
-                semantic_score * SEARCH_WEIGHT_SEMANTIC +
-                attribute_score * SEARCH_WEIGHT_ATTRIBUTE +
-                quality_score * SEARCH_WEIGHT_QUALITY +
+                semantic_score * weight_semantic +
+                attribute_score * weight_attr +
+                quality_score * weight_quality +
                 temporal_boost
             )
             

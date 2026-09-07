@@ -684,10 +684,10 @@ async def execute_search(
             img = ImageOps.exif_transpose(Image.open(query_file.file)).convert("RGB")
             if img.width <= 0 or img.height <= 0:
                 raise HTTPException(status_code=400, detail="The uploaded image has invalid dimensions.")
-            emb = gpu_scheduler.embed_image(img)
-            
-            # Detect entity type of the query image for collection-scoped search
+            # Detect entity type and bounding box of the query image for collection-scoped search
             entity_type = None
+            query_crop = img
+            emb_reid = None
             try:
                 cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
                 with gpu_scheduler.gpu_lock:
@@ -699,9 +699,32 @@ async def execute_search(
                         entity_type = "person"
                     elif cls_idx in [2, 7]: # Car, Truck
                         entity_type = "vehicle"
+                    
+                    # If YOLO detected a subject occupying a subset of the image, crop to the bounding box
+                    bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
+                    w, h = img.width, img.height
+                    pad_x = (bx2 - bx1) * 0.05
+                    pad_y = (by2 - by1) * 0.05
+                    cx1 = max(0, int(bx1 - pad_x))
+                    cy1 = max(0, int(by1 - pad_y))
+                    cx2 = min(w, int(bx2 + pad_x))
+                    cy2 = min(h, int(by2 + pad_y))
+                    if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
+                        query_crop = img.crop((cx1, cy1, cx2, cy2))
             except Exception as yolo_err:
                 LOGGER.debug(f"Failed to detect query image entity type: {yolo_err}")
+                query_crop = img
                 
+            emb = gpu_scheduler.embed_image(query_crop)
+
+            # If person entity, extract Re-ID embedding from the query crop
+            if entity_type == "person":
+                try:
+                    emb_reid = gpu_scheduler.embed_reid(query_crop)
+                except Exception as re_err:
+                    LOGGER.debug(f"Query Re-ID extraction note: {re_err}")
+                    emb_reid = None
+
             # Attempt face detection internally on query image
             try:
                 await query_file.seek(0)
@@ -720,6 +743,8 @@ async def execute_search(
                 face_embedding=emb_face, 
                 face_status=face_status,
                 strict_gate=strict_gate,
+                reid_embedding=emb_reid,
+                enable_rrf=True if emb_reid is not None else False
             )
             
             # Inject face matching diagnostic info to show in the UI

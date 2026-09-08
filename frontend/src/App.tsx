@@ -282,6 +282,7 @@ export const App: React.FC = () => {
               onStartSingleVideo={() => setCurrentView("create_single")}
               onStartMultiCamera={() => setCurrentView("create_multi")}
               onOpenInvestigation={handleOpenInvestigation}
+              onRefreshJobs={fetchJobs}
             />
           )}
 

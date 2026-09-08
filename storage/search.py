@@ -151,15 +151,29 @@ class SearchLayer:
         clip_weight: float = 0.7,
         reid_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
-        """Run object-crop image retrieval and return ranked matches with full multi-signal breakdown."""
+        """Run hybrid object-crop and scene-keyframe image retrieval across cameras with full multi-signal breakdown."""
+        from config import IMAGE_MATCH_THRESHOLD, IMAGE_VISUAL_WEIGHT, IMAGE_FACE_WEIGHT, FACE_MATCH_THRESHOLD, FINAL_SCORE_MIN_IMAGE
+        
         search_filters = dict(filters or {})
-        if entity_type is not None and "entity_type" not in search_filters:
-            search_filters["entity_type"] = entity_type
-            
-        index_info = self.vector.describe_visual_index(search_filters)
+        job_id = search_filters.get("job_id")
+        cam_id = search_filters.get("camera_id")
+        
+        # Determine cameras in scope
+        cameras_in_scope = []
+        if job_id:
+            cameras_in_scope = self.sqlite.get_cameras_by_job(job_id)
+        
+        obj_filters = dict(search_filters)
+        if entity_type is not None and "entity_type" not in obj_filters:
+            obj_filters["entity_type"] = entity_type
+
+        index_info = self.vector.describe_visual_index(obj_filters)
+        scene_info = self.vector.describe_scene_index(search_filters) if hasattr(self.vector, "describe_scene_index") else {"total": 0}
+        
         diagnostics: Dict[str, Any] = {
             "collection": index_info["collection"],
             "indexed_vectors": index_info["total"],
+            "indexed_scene_vectors": scene_info.get("total", 0),
             "indexed_by_object_type": index_info["by_object_type"],
             "indexed_by_camera": index_info["by_camera"],
             "embedding_model": index_info["embedding_model"],
@@ -169,17 +183,38 @@ class SearchLayer:
             "filters": search_filters,
         }
         self.last_image_search_diagnostics = diagnostics
-        if not index_info["total"]:
+        
+        if not index_info["total"] and not scene_info.get("total", 0):
             diagnostics["search_state"] = "NO_DATA"
             raise VisualIndexEmptyError(diagnostics)
 
-        # Stage 1: Candidate Retrieval (CLIP Collection)
+        # Stage 1: Candidate Retrieval (Object Crops - CLIP & Re-ID)
         candidate_k = max(100, top_k * 4)
-        vector_matches = self.vector.query_visual_embeddings(
-            query_embedding=query_embedding,
-            top_k=candidate_k,
-            filters=search_filters
-        )
+        vector_matches: List[Dict[str, Any]] = []
+        
+        # Stratified multi-camera candidate retrieval for investigations
+        if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
+            per_cam_k = max(25, candidate_k // len(cameras_in_scope))
+            seen_ids = set()
+            for cam in cameras_in_scope:
+                cam_f = dict(obj_filters)
+                cam_f["camera_id"] = cam["id"]
+                cam_res = self.vector.query_visual_embeddings(
+                    query_embedding=query_embedding,
+                    top_k=per_cam_k,
+                    filters=cam_f
+                )
+                for cr in cam_res:
+                    if cr["id"] not in seen_ids:
+                        seen_ids.add(cr["id"])
+                        vector_matches.append(cr)
+        else:
+            vector_matches = self.vector.query_visual_embeddings(
+                query_embedding=query_embedding,
+                top_k=candidate_k,
+                filters=obj_filters
+            )
+            
         diagnostics["raw_candidate_count"] = len(vector_matches)
         diagnostics["raw_top_scores"] = [round(float(match["similarity"]), 4) for match in vector_matches[:10]]
         
@@ -188,11 +223,28 @@ class SearchLayer:
         reid_ranks_by_track: Dict[str, int] = {}
         if enable_rrf and reid_embedding is not None:
             try:
-                reid_matches = self.vector.query_reid_embeddings(
-                    query_embedding=reid_embedding,
-                    top_k=candidate_k,
-                    filters=search_filters
-                )
+                reid_matches: List[Dict[str, Any]] = []
+                if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
+                    per_cam_k = max(25, candidate_k // len(cameras_in_scope))
+                    seen_r_ids = set()
+                    for cam in cameras_in_scope:
+                        cam_f = dict(obj_filters)
+                        cam_f["camera_id"] = cam["id"]
+                        cam_res = self.vector.query_reid_embeddings(
+                            query_embedding=reid_embedding,
+                            top_k=per_cam_k,
+                            filters=cam_f
+                        )
+                        for cr in cam_res:
+                            if cr["id"] not in seen_r_ids:
+                                seen_r_ids.add(cr["id"])
+                                reid_matches.append(cr)
+                else:
+                    reid_matches = self.vector.query_reid_embeddings(
+                        query_embedding=reid_embedding,
+                        top_k=candidate_k,
+                        filters=obj_filters
+                    )
                 for r_rank, r_match in enumerate(reid_matches, start=1):
                     r_meta = r_match.get("metadata", {})
                     t_id = r_meta.get("track_id")
@@ -201,15 +253,9 @@ class SearchLayer:
                         reid_scores_by_track[t_id] = float(r_match["similarity"])
             except Exception as re_err:
                 LOGGER.debug(f"Re-ID collection query note: {re_err}")
-        
-        if not vector_matches:
-            diagnostics["search_state"] = "NO_CANDIDATES"
-            LOGGER.info("IMAGE_SEARCH_STATE: NO_CANDIDATES %s", diagnostics)
-            return []
-        
-        # Stage 2: Inflate and Re-rank (Visual matches only first)
-        from config import IMAGE_MATCH_THRESHOLD, IMAGE_VISUAL_WEIGHT, IMAGE_FACE_WEIGHT, FACE_MATCH_THRESHOLD, FINAL_SCORE_MIN_IMAGE
-        re_ranked, below_threshold = self._inflate_metadata_and_re_rank_with_below_gate(
+
+        # Stage 2: Inflate and Re-rank Object Matches
+        obj_results, below_threshold = self._inflate_metadata_and_re_rank_with_below_gate(
             vector_matches,
             query_colors=None,
             is_face=False,
@@ -218,9 +264,9 @@ class SearchLayer:
             expected_entity_type=entity_type
         )
 
-        # Stage 2b: Apply Reciprocal Rank Fusion (RRF) if enabled
+        # Apply Reciprocal Rank Fusion (RRF) on object results if enabled
         if enable_rrf and reid_ranks_by_track:
-            for c_rank, match in enumerate(re_ranked, start=1):
+            for c_rank, match in enumerate(obj_results, start=1):
                 t_id = match.get("track_id")
                 clip_rrf = clip_weight / (rrf_k + c_rank)
                 r_rank = reid_ranks_by_track.get(t_id, candidate_k + 1)
@@ -232,71 +278,151 @@ class SearchLayer:
                 if "signal_breakdown" in match:
                     match["signal_breakdown"]["reid"] = reid_sim
                     match["signal_breakdown"]["rrf"] = rrf_score
-            re_ranked = sorted(re_ranked, key=lambda x: x.get("rrf_score", x["similarity"]), reverse=True)
+            obj_results = sorted(obj_results, key=lambda x: x.get("rrf_score", x["similarity"]), reverse=True)
 
-        diagnostics["post_gate_count"] = len(re_ranked)
+        for match in obj_results:
+            match["match_type"] = "object"
+            match["diagnostic_label"] = "Object match"
+
+        # Stage 3: Candidate Retrieval for Scene Keyframes (Full Frames)
+        scene_results: List[Dict[str, Any]] = []
+        if hasattr(self.vector, "scene_coll"):
+            scene_filters = {}
+            if job_id:
+                scene_filters["job_id"] = job_id
+            if cam_id:
+                scene_filters["camera_id"] = cam_id
+                
+            raw_scene_matches: List[Dict[str, Any]] = []
+            if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
+                per_cam_k = max(20, candidate_k // len(cameras_in_scope))
+                seen_s_ids = set()
+                for cam in cameras_in_scope:
+                    cam_sf = dict(scene_filters)
+                    cam_sf["camera_id"] = cam["id"]
+                    cam_sres = self.vector.query_scene_embeddings(
+                        query_embedding=query_embedding,
+                        top_k=per_cam_k,
+                        filters=cam_sf
+                    )
+                    for sr in cam_sres:
+                        if sr["id"] not in seen_s_ids:
+                            seen_s_ids.add(sr["id"])
+                            raw_scene_matches.append(sr)
+            else:
+                raw_scene_matches = self.vector.query_scene_embeddings(
+                    query_embedding=query_embedding,
+                    top_k=candidate_k,
+                    filters=scene_filters if scene_filters else None
+                )
+
+            # Inflate scene candidates
+            camera_map = {c["id"]: c for c in cameras_in_scope} if cameras_in_scope else {}
+            
+            # Sort scene matches by similarity desc
+            raw_scene_matches.sort(key=lambda x: x["similarity"], reverse=True)
+            
+            seen_scene_windows: Dict[str, List[float]] = {}  # camera_id -> list of timestamps
+            
+            for s_match in raw_scene_matches:
+                s_sim = float(s_match["similarity"])
+                s_meta = s_match["metadata"]
+                
+                # Check match threshold
+                if strict_gate and s_sim < IMAGE_MATCH_THRESHOLD:
+                    low_cand = {
+                        "similarity": round(s_sim, 4),
+                        "semantic_score": round(s_sim, 4),
+                        "entity_type": "scene",
+                        "match_type": "scene",
+                        "job_id": s_meta.get("job_id"),
+                        "camera_id": s_meta.get("camera_id"),
+                        "timestamp": float(s_meta.get("timestamp", 0.0)),
+                        "crop_path": s_meta.get("source_frame_path"),
+                        "is_low_confidence": True,
+                        "status": "BELOW_THRESHOLD",
+                        "diagnostic_label": "Below Relevance Threshold"
+                    }
+                    below_threshold.append(low_cand)
+                    continue
+
+                c_id = s_meta.get("camera_id", "")
+                t_stamp = float(s_meta.get("timestamp", 0.0))
+                
+                # Deduplicate temporal keyframes within 2.0s on the same camera
+                if c_id not in seen_scene_windows:
+                    seen_scene_windows[c_id] = []
+                if any(abs(t_stamp - past_t) < 2.0 for past_t in seen_scene_windows[c_id]):
+                    continue
+                seen_scene_windows[c_id].append(t_stamp)
+
+                # Camera metadata lookup
+                if c_id not in camera_map and s_meta.get("job_id"):
+                    job_cams = self.sqlite.get_cameras_by_job(s_meta["job_id"])
+                    for jc in job_cams:
+                        camera_map[jc["id"]] = jc
+
+                cam_info = camera_map.get(c_id, {})
+                video_source = cam_info.get("source_path") or s_meta.get("source_video", "")
+                camera_name = cam_info.get("name") or c_id
+
+                scene_item = {
+                    "similarity": round(s_sim, 4),
+                    "semantic_score": round(s_sim, 4),
+                    "attribute_score": 1.0,
+                    "quality_score": 1.0,
+                    "entity_type": "scene",
+                    "match_type": "scene",
+                    "diagnostic_label": "Scene keyframe match",
+                    "job_id": s_meta.get("job_id"),
+                    "camera_id": c_id,
+                    "camera_name": camera_name,
+                    "timestamp": t_stamp,
+                    "frame_idx": s_meta.get("frame_idx", 0),
+                    "track_id": None,
+                    "confidence": 0.95,
+                    "bbox": [0.0, 0.0, 0.0, 0.0],
+                    "crop_path": s_meta.get("source_frame_path"),
+                    "video_source": video_source,
+                    "plate_text": None,
+                    "video_clip_path": None,
+                    "signal_breakdown": {
+                        "visual": round(s_sim, 4),
+                        "reid": None,
+                        "face": None,
+                        "color": 1.0,
+                        "quality": 1.0,
+                        "temporal": 0.0,
+                        "camera": "PASS",
+                        "ocr": None,
+                        "composite": round(s_sim, 4)
+                    }
+                }
+                scene_results.append(scene_item)
+
+        # Stage 4: Candidate Fusion & Re-ranking
+        all_results = obj_results + scene_results
+        all_results.sort(key=lambda x: x["similarity"], reverse=True)
+
+        diagnostics["post_gate_count"] = len(all_results)
+        diagnostics["object_matches_count"] = len(obj_results)
+        diagnostics["scene_matches_count"] = len(scene_results)
         diagnostics["below_threshold_count"] = len(below_threshold)
         diagnostics["gate_threshold"] = FINAL_SCORE_MIN_IMAGE if strict_gate else 0.0
         
         # Determine Search State
-        if not re_ranked and below_threshold:
+        if not all_results and below_threshold:
             diagnostics["search_state"] = "BELOW_THRESHOLD"
-        elif re_ranked:
+        elif all_results:
             diagnostics["search_state"] = "RESULTS"
         else:
             diagnostics["search_state"] = "NO_CANDIDATES"
             
-        LOGGER.info("IMAGE_SEARCH_TRACE state=%s %s", diagnostics["search_state"], diagnostics)
-        
-        # Stage 3: Optional Face-assisted Hybrid Re-ranking
-        use_face = face_embedding is not None and face_status in ["GOOD_FACE", "PARTIAL_FACE"]
-        
-        if use_face and re_ranked:
-            face_scores = self.search_face_internal(face_embedding, filters, top_k=100)
-            track_uuids = {m["track_id"] for m in re_ranked if m.get("track_id")}
-            face_tracks = set()
-            if track_uuids:
-                try:
-                    face_res = self.vector.face_coll.get(
-                        where={"track_id": {"$in": list(track_uuids)}} if len(track_uuids) > 1 else {"track_id": list(track_uuids)[0]},
-                        include=["metadatas"]
-                    )
-                    for meta in face_res.get("metadatas", []):
-                        t_id = meta.get("track_id")
-                        if t_id:
-                            face_tracks.add(t_id)
-                except Exception as db_err:
-                    LOGGER.debug(f"Failed to query face presence: {db_err}")
-            
-            for match in re_ranked:
-                track_uuid = match.get("track_id")
-                S_vis = match["similarity"]
-                
-                if track_uuid in face_tracks:
-                    S_face = face_scores.get(track_uuid, 0.0)
-                    if S_face < FACE_MATCH_THRESHOLD:
-                        S_face = 0.0
-                        
-                    final_score = IMAGE_VISUAL_WEIGHT * S_vis + IMAGE_FACE_WEIGHT * S_face
-                    match["similarity"] = round(final_score, 4)
-                    match["face_score"] = round(S_face, 4)
-                    match["match_type"] = "face_assisted"
-                    if "signal_breakdown" in match:
-                        match["signal_breakdown"]["face"] = round(S_face, 4)
-                        match["signal_breakdown"]["composite"] = round(final_score, 4)
-                else:
-                    match["similarity"] = S_vis
-                    match["face_score"] = 0.0
-                    match["match_type"] = "visual_only"
-            
-            re_ranked = sorted(re_ranked, key=lambda x: x["similarity"], reverse=True)
-        else:
-            for match in re_ranked:
-                match["match_type"] = "visual_only"
-                match["face_score"] = 0.0
-                
+        LOGGER.info("IMAGE_SEARCH_TRACE state=%s objects=%d scenes=%d %s",
+                    diagnostics["search_state"], len(obj_results), len(scene_results), diagnostics)
+
         self.last_below_threshold_results = below_threshold[:top_k]
-        return re_ranked[:top_k]
+        return all_results[:top_k]
 
 
     def search_by_face(

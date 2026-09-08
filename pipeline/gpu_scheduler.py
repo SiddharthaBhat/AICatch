@@ -685,6 +685,8 @@ class GPUScheduler(threading.Thread):
     def embed_text(self, text: str) -> List[float]:
         """Embeds query text into a normalised CLIP vector under the GPU lock."""
         with self.gpu_lock:
+            if self.clip_model is None or self.clip_processor is None:
+                self.load_models()
             inputs = self.clip_processor(text=[text], return_tensors="pt", padding=True).to(CLIP_DEVICE)
             with torch.no_grad():
                 res = self.clip_model.get_text_features(**inputs)
@@ -696,6 +698,8 @@ class GPUScheduler(threading.Thread):
     def embed_image(self, image: Image.Image) -> List[float]:
         """Embeds a PIL crop image into a normalised CLIP vector under the GPU lock."""
         with self.gpu_lock:
+            if self.clip_model is None or self.clip_processor is None:
+                self.load_models()
             inputs = self.clip_processor(images=[image.convert("RGB")], return_tensors="pt").to(CLIP_DEVICE)
             if CLIP_DEVICE == "cuda":
                 inputs["pixel_values"] = inputs["pixel_values"].half()
@@ -708,8 +712,11 @@ class GPUScheduler(threading.Thread):
 
     def embed_reid(self, image: Image.Image) -> Optional[List[float]]:
         """Extracts and normalizes person Re-ID embedding under the GPU lock."""
-        if self.reid_model is None or self.reid_transform is None:
-            return None
+        with self.gpu_lock:
+            if self.reid_model is None or self.reid_transform is None:
+                self.load_models()
+            if self.reid_model is None or self.reid_transform is None:
+                return None
         with self.gpu_lock:
             tensor_crop = self.reid_transform(image.convert("RGB")).unsqueeze(0).to(REID_DEVICE)
             if REID_DEVICE == "cuda":

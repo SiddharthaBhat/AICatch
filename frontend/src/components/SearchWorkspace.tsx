@@ -535,10 +535,23 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                         <User size={32} style={{ color: "var(--text-muted)" }} />
                       )}
 
-                      <div style={{ position: "absolute", top: "6px", left: "6px" }}>
+                      <div style={{ position: "absolute", top: "6px", left: "6px", display: "flex", gap: "4px" }}>
                         <span style={{ fontSize: "9px", fontWeight: "700", padding: "2px 6px", borderRadius: "4px", backgroundColor: "rgba(0,0,0,0.7)", color: "var(--color-accent)", textTransform: "uppercase" }}>
                           {res.entity_type || "OBJECT"}
                         </span>
+                        {res.match_type && (
+                          <span style={{ 
+                            fontSize: "9px", 
+                            fontWeight: "700", 
+                            padding: "2px 6px", 
+                            borderRadius: "4px", 
+                            backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)", 
+                            color: "#ffffff", 
+                            textTransform: "uppercase" 
+                          }}>
+                            {res.match_type === "scene" ? "Scene Match" : "Object Match"}
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -646,6 +659,14 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               <span style={{ color: "var(--text-muted)" }}>Camera:</span>
               <strong style={{ color: "var(--text-primary)" }}>{getCameraDisplayName(selectedResult.camera_id)}</strong>
             </div>
+            {selectedResult.match_type && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Match Type:</span>
+                <strong style={{ color: selectedResult.match_type === "scene" ? "#3b82f6" : "var(--color-accent)", textTransform: "capitalize" }}>
+                  {selectedResult.match_type === "scene" ? "Scene Keyframe" : "Object Crop"}
+                </strong>
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ color: "var(--text-muted)" }}>Object Type:</span>
               <strong style={{ color: "var(--text-primary)", textTransform: "capitalize" }}>{selectedResult.entity_type || "person"}</strong>

@@ -6,4 +6,5 @@ from pipeline.gpu_scheduler import GPUScheduler
 from pipeline.journey_engine import JourneyEngine
 from pipeline.matcher import ActiveQueryMatcher
 from pipeline.dispatcher import ResultDispatcher
+from pipeline.scene_indexer import SceneIndexer
 

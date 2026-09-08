@@ -15,7 +15,7 @@ import numpy as np
 
 from config import (
     MEDIA_DIR, UPLOAD_DIR, CLIPS_DIR, THUMBNAILS_DIR,
-    PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR
+    PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class MediaStorage:
         """Create media directory layout."""
         for folder in [
             UPLOAD_DIR, CLIPS_DIR, THUMBNAILS_DIR,
-            PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR
+            PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR
         ]:
             folder.mkdir(parents=True, exist_ok=True)
 
@@ -118,6 +118,31 @@ class MediaStorage:
         success = cv2.imwrite(str(dest_path), image_data)
         if not success:
             raise IOError(f"Failed to write thumbnail to: {dest_path}")
+            
+        return dest_path
+
+    def save_keyframe(
+        self,
+        image_data: np.ndarray,
+        job_id: str,
+        camera_id: str,
+        frame_idx: int,
+        timestamp: float
+    ) -> Path:
+        """Saves a full-frame scene keyframe to the keyframes directory."""
+        clean_job = Path(job_id).name
+        clean_cam = Path(camera_id).name
+        
+        target_dir = KEYFRAMES_DIR / clean_job / clean_cam
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        filename = f"keyframe_f{frame_idx}_t{int(timestamp * 1000)}.jpg"
+        dest_path = target_dir / filename
+        dest_path = self.sanitize_path(dest_path)
+        
+        success = cv2.imwrite(str(dest_path), image_data)
+        if not success:
+            raise IOError(f"Failed to write scene keyframe to: {dest_path}")
             
         return dest_path
 

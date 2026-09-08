@@ -46,6 +46,12 @@ class VectorDatabase:
             metadata={"hnsw:space": "cosine"}
         )
 
+        # Scene / Keyframe collection: cosine distance search for full-frame CLIP vectors
+        self.scene_coll = self.client.get_or_create_collection(
+            name=f"scene_{EMBEDDING_MODEL_NAME}_{EMBEDDING_VERSION}".replace("-", "_"),
+            metadata={"hnsw:space": "cosine", "embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION}
+        )
+
     # ==============================================================================
     # Insert / Add Methods
     # ==============================================================================
@@ -144,6 +150,78 @@ class VectorDatabase:
             "collection_total": coll.count()
         }
 
+    def add_scene_embeddings(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+        documents: Optional[List[str]] = None
+    ) -> int:
+        """Insert a batch of full-frame scene keyframe embeddings into ChromaDB with validation."""
+        if not ids:
+            return 0
+        if len(ids) != len(embeddings) or len(ids) != len(metadatas):
+            raise ValueError(f"Count mismatch: ids={len(ids)}, embeddings={len(embeddings)}, metadatas={len(metadatas)}")
+        
+        validated_embeddings = self._validate_and_normalize_embeddings(embeddings)
+        dim = len(validated_embeddings[0])
+
+        normalized_metas = []
+        for meta in metadatas:
+            m = dict(meta)
+            m.setdefault("embedding_model", EMBEDDING_MODEL_NAME)
+            m.setdefault("embedding_version", EMBEDDING_VERSION)
+            m.setdefault("embedding_dim", dim)
+            m.setdefault("embedding_type", "scene")
+            normalized_metas.append(m)
+
+        self.scene_coll.upsert(
+            ids=ids,
+            embeddings=validated_embeddings,
+            metadatas=normalized_metas,
+            documents=documents
+        )
+        LOGGER.info(
+            "SCENE_VECTOR_INSERT attempted=%d collection=%s dim=%d total_coll=%d",
+            len(ids), self.scene_coll.name, dim, self.scene_coll.count()
+        )
+        return len(ids)
+
+    def query_scene_embeddings(
+        self,
+        query_embedding: List[float],
+        top_k: int = 20,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """Search the scene keyframe collection for matching full-frame visual vectors."""
+        where = self._build_where_filter(filters)
+        results = self.scene_coll.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            where=where,
+            include=["metadatas", "distances"]
+        )
+        return self._format_results(results)
+
+    def describe_scene_index(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return aggregate index facts for scene keyframes."""
+        active_filters = dict(filters or {})
+        active_filters.update({"embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION})
+        records = self.scene_coll.get(where=self._build_where_filter(active_filters), include=["metadatas", "embeddings"])
+        metadatas, embeddings = records.get("metadatas", []), records.get("embeddings", [])
+        by_camera: Dict[str, int] = {}
+        for meta in metadatas:
+            camera = meta.get("camera_id", "unknown")
+            by_camera[camera] = by_camera.get(camera, 0) + 1
+        return {
+            "collection": self.scene_coll.name,
+            "total": len(metadatas),
+            "by_camera": by_camera,
+            "embedding_dimensions": sorted({len(vector) for vector in embeddings if vector is not None}),
+            "embedding_model": EMBEDDING_MODEL_NAME,
+            "embedding_version": EMBEDDING_VERSION
+        }
+
     def add_reid_embeddings(
         self,
         ids: List[str],
@@ -205,6 +283,18 @@ class VectorDatabase:
         )
         LOGGER.info("FACE_VECTOR_INSERT attempted=%d collection=%s total=%d", len(ids), self.face_coll.name, self.face_coll.count())
         return len(ids)
+
+    def delete_face_embeddings(self, ids: List[str]) -> int:
+        """Remove specific face embedding IDs from ChromaDB."""
+        if not ids:
+            return 0
+        try:
+            self.face_coll.delete(ids=ids)
+            LOGGER.info(f"Deleted {len(ids)} face embeddings from {self.face_coll.name}")
+            return len(ids)
+        except Exception as e:
+            LOGGER.warning(f"Failed to delete face embeddings {ids}: {e}")
+            return 0
 
     # ==============================================================================
     # Query / Search Methods
@@ -303,37 +393,52 @@ class VectorDatabase:
 
     def delete_by_job(self, job_id: str) -> Dict[str, int]:
         """Deletes all vector references associated with a specific job ID across all collections with verification."""
-        deleted_counts = {"visual": 0, "reid": 0, "face": 0}
+        deleted_counts = {"visual": 0, "reid": 0, "face": 0, "scene": 0}
         
-        for coll_name, coll in [("visual", self.visual_coll), ("reid", self.reid_coll), ("face", self.face_coll)]:
+        for coll_name, coll in [("visual", self.visual_coll), ("reid", self.reid_coll), ("face", self.face_coll), ("scene", self.scene_coll)]:
             try:
-                # Find all IDs matching job_id or investigation_id
+                # Direct collection where-delete (ChromaDB native)
+                try:
+                    coll.delete(where={"job_id": job_id})
+                except Exception:
+                    pass
+                try:
+                    coll.delete(where={"investigation_id": job_id})
+                except Exception:
+                    pass
+
+                # Also find and delete any remaining IDs in batches until fully purged
                 matched_ids = set()
-                try:
-                    res1 = coll.get(where={"job_id": job_id})
-                    if res1 and res1.get("ids"):
-                        matched_ids.update(res1["ids"])
-                except Exception:
-                    pass
-                    
-                try:
-                    res2 = coll.get(where={"investigation_id": job_id})
-                    if res2 and res2.get("ids"):
-                        matched_ids.update(res2["ids"])
-                except Exception:
-                    pass
-                    
+                while True:
+                    batch_ids = []
+                    try:
+                        res1 = coll.get(where={"job_id": job_id}, limit=500)
+                        if res1 and res1.get("ids"):
+                            batch_ids.extend(res1["ids"])
+                    except Exception:
+                        pass
+                        
+                    try:
+                        res2 = coll.get(where={"investigation_id": job_id}, limit=500)
+                        if res2 and res2.get("ids"):
+                            batch_ids.extend(res2["ids"])
+                    except Exception:
+                        pass
+
+                    if not batch_ids:
+                        break
+
+                    matched_ids.update(batch_ids)
+                    try:
+                        coll.delete(ids=list(set(batch_ids)))
+                    except Exception as del_err:
+                        LOGGER.warning(f"Batch delete error in {coll_name} for {job_id}: {del_err}")
+                        break
+
+                deleted_counts[coll_name] = len(matched_ids)
                 if matched_ids:
-                    id_list = list(matched_ids)
-                    # Delete in chunks of 500 to avoid query size limits
-                    chunk_size = 500
-                    for i in range(0, len(id_list), chunk_size):
-                        chunk = id_list[i:i + chunk_size]
-                        coll.delete(ids=chunk)
-                    deleted_counts[coll_name] = len(id_list)
-                    LOGGER.info(f"Deleted {len(id_list)} {coll_name} vectors for job: {job_id}")
+                    LOGGER.info(f"Deleted {len(matched_ids)} {coll_name} vectors for job: {job_id}")
             except Exception as e:
-                LOGGER.error(f"Error deleting {coll_name} vectors for job {job_id}: {e}")
-                raise e
+                LOGGER.warning(f"Error cleaning {coll_name} vectors for job {job_id}: {e}")
                 
         return deleted_counts

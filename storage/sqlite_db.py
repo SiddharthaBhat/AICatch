@@ -523,6 +523,32 @@ class SQLiteDatabase:
             cursor = conn.execute("SELECT * FROM detections WHERE track_id = ? ORDER BY frame_idx ASC", (track_uuid,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_saved_person(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a specific saved person profile by ID."""
+        with self.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM saved_persons WHERE id = ?", (person_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def delete_saved_person(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """Delete a saved person profile and return their metadata for media cleanup."""
+        with self.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM saved_persons WHERE id = ?", (person_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            record = dict(row)
+            conn.execute("DELETE FROM saved_persons WHERE id = ?", (person_id,))
+            return record
+
+    def delete_active_query(self, query_id: str) -> bool:
+        """Permanently delete an active query alert rule."""
+        with self.connection() as conn:
+            cursor = conn.execute("DELETE FROM active_queries WHERE id = ?", (query_id,))
+            return cursor.rowcount > 0
+
     def get_saved_persons(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve saved identity profiles, optionally filtered by job_id."""
         with self.connection() as conn:
@@ -596,8 +622,10 @@ class SQLiteDatabase:
             )
 
     def delete_folder(self, folder_id: str) -> None:
-        """Delete an investigation folder (cascades items)."""
+        """Delete an investigation folder (cascades items and notes)."""
         with self.connection() as conn:
+            conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id = ?", (folder_id,))
+            conn.execute("DELETE FROM folder_items WHERE folder_id = ?", (folder_id,))
             conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
 
     def get_folders(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -622,7 +650,7 @@ class SQLiteDatabase:
     def delete_folder_item(self, folder_id: str, target_id: str) -> None:
         """Remove a specific item from a folder."""
         with self.connection() as conn:
-            conn.execute("DELETE FROM folder_items WHERE folder_id = ? AND item_id = ?", (folder_id, target_id))
+            conn.execute("DELETE FROM folder_items WHERE folder_id = ? AND (item_id = ? OR id = ?)", (folder_id, target_id, target_id))
 
     def get_folder_items(self, folder_id: str) -> List[Dict[str, Any]]:
         """Get all items inside a folder."""

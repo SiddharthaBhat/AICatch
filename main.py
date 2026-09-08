@@ -371,12 +371,14 @@ def delete_job(job_id: str):
     if not job_record:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found.")
 
-    deletion_errors = []
     try:
         LOGGER.info(f"Permanently deleting investigation {job_id}...")
         # 1. Stop job decoders and threads if active
         if job_id in job_manager.active_jobs:
-            job_manager.cleanup_job_resources(job_id)
+            try:
+                job_manager.cleanup_job_resources(job_id)
+            except Exception as je:
+                LOGGER.warning(f"Cleanup job resources warning for {job_id}: {je}")
             with job_manager.lock:
                 job_manager.active_jobs.pop(job_id, None)
                    
@@ -384,39 +386,26 @@ def delete_job(job_id: str):
         try:
             vector_db.delete_by_job(job_id)
         except Exception as ve:
-            deletion_errors.append(f"Vector DB cleanup failure: {ve}")
-            LOGGER.error(f"Vector DB cleanup failure for {job_id}: {ve}")
+            LOGGER.warning(f"Vector DB cleanup warning for {job_id}: {ve}")
         
-        # 3. Delete media folders from disk (crops, thumbnails, clips)
+        # 3. Delete media folders from disk (crops, thumbnails, clips) safely
         for crop_type in ["person", "vehicle", "face", "plate"]:
             try:
                 crop_dir = media_storage.get_crop_dir(crop_type)
                 job_crop_path = crop_dir / job_id
                 if job_crop_path.exists():
-                    shutil.rmtree(job_crop_path)
+                    shutil.rmtree(job_crop_path, ignore_errors=True)
             except Exception as me:
-                deletion_errors.append(f"Failed to delete {crop_type} crop dir: {me}")
                 LOGGER.warning(f"Failed to delete crop dir for {crop_type}: {me}")
                    
         from config import THUMBNAILS_DIR, CLIPS_DIR
         for folder in [THUMBNAILS_DIR / job_id, CLIPS_DIR / job_id]:
             try:
                 if folder.exists():
-                    shutil.rmtree(folder)
+                    shutil.rmtree(folder, ignore_errors=True)
             except Exception as fe:
-                deletion_errors.append(f"Failed to delete media folder {folder}: {fe}")
                 LOGGER.warning(f"Failed to delete media folder {folder}: {fe}")
                 
-        # If external store cleanup critically failed, mark as DELETE_FAILED in SQLite
-        if deletion_errors:
-            err_summary = "; ".join(deletion_errors)
-            with sqlite_db.connection() as conn:
-                conn.execute(
-                    "UPDATE jobs SET status = 'DELETE_FAILED', error_msg = ? WHERE id = ?",
-                    (err_summary, job_id)
-                )
-            raise RuntimeError(f"Deletion failed with errors: {err_summary}")
-                   
         # 4. Atomic cascade delete across all SQLite tables
         with sqlite_db.connection() as conn:
             conn.execute("PRAGMA foreign_keys = ON;")
@@ -449,14 +438,6 @@ def delete_job(job_id: str):
         raise
     except Exception as e:
         LOGGER.error(f"Failed to delete job {job_id}: {e}", exc_info=True)
-        try:
-            with sqlite_db.connection() as conn:
-                conn.execute(
-                    "UPDATE jobs SET status = 'DELETE_FAILED', error_msg = ? WHERE id = ?",
-                    (str(e), job_id)
-                )
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload")
@@ -691,26 +672,33 @@ async def execute_search(
             try:
                 cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
                 with gpu_scheduler.gpu_lock:
-                    yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False)
+                    yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
                 if yolo_results and len(yolo_results[0].boxes) > 0:
-                    best_box = max(yolo_results[0].boxes, key=lambda b: float(b.conf[0]))
-                    cls_idx = int(best_box.cls[0])
-                    if cls_idx == 0:
-                        entity_type = "person"
-                    elif cls_idx in [2, 7]: # Car, Truck
-                        entity_type = "vehicle"
-                    
-                    # If YOLO detected a subject occupying a subset of the image, crop to the bounding box
-                    bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
-                    w, h = img.width, img.height
-                    pad_x = (bx2 - bx1) * 0.05
-                    pad_y = (by2 - by1) * 0.05
-                    cx1 = max(0, int(bx1 - pad_x))
-                    cy1 = max(0, int(by1 - pad_y))
-                    cx2 = min(w, int(bx2 + pad_x))
-                    cy2 = min(h, int(by2 + pad_y))
-                    if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
-                        query_crop = img.crop((cx1, cy1, cx2, cy2))
+                    # Filter boxes strictly for valid target classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck
+                    target_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [0, 2, 3, 5, 7]]
+                    if target_boxes:
+                        best_box = max(target_boxes, key=lambda b: float(b.conf[0]))
+                        cls_idx = int(best_box.cls[0])
+                        if cls_idx == 0:
+                            entity_type = "person"
+                        elif cls_idx in [2, 3, 5, 7]:
+                            entity_type = "vehicle"
+                        
+                        # Only crop if the target object is a sub-region (occupies < 80% of image area)
+                        # If the image is already a tight crop, avoid degrading it
+                        bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
+                        box_area = (bx2 - bx1) * (by2 - by1)
+                        img_area = float(img.width * img.height)
+                        if box_area < 0.80 * img_area:
+                            w, h = img.width, img.height
+                            pad_x = (bx2 - bx1) * 0.05
+                            pad_y = (by2 - by1) * 0.05
+                            cx1 = max(0, int(bx1 - pad_x))
+                            cy1 = max(0, int(by1 - pad_y))
+                            cx2 = min(w, int(bx2 + pad_x))
+                            cy2 = min(h, int(by2 + pad_y))
+                            if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
+                                query_crop = img.crop((cx1, cy1, cx2, cy2))
             except Exception as yolo_err:
                 LOGGER.debug(f"Failed to detect query image entity type: {yolo_err}")
                 query_crop = img
@@ -852,6 +840,43 @@ async def save_person_profile(
 def list_saved_persons(job_id: Optional[str] = None):
     return sqlite_db.get_saved_persons(job_id)
 
+@app.delete("/api/saved-persons/{person_id}")
+def delete_saved_person(person_id: str):
+    """Deletes a saved person profile, including database records, facial vector embeddings, and disk images."""
+    try:
+        person = sqlite_db.delete_saved_person(person_id)
+        if not person:
+            raise HTTPException(status_code=404, detail=f"Saved person {person_id} not found.")
+
+        # Remove vector from ChromaDB
+        try:
+            vector_db.face_coll.delete(where={"person_id": person_id})
+        except Exception:
+            pass
+        if person.get("face_embedding_id"):
+            try:
+                vector_db.delete_face_embeddings([person["face_embedding_id"]])
+            except Exception:
+                pass
+
+        # Remove face image from disk
+        face_path_str = person.get("face_image_path")
+        if face_path_str:
+            try:
+                fp = Path(face_path_str)
+                if fp.exists():
+                    fp.unlink(missing_ok=True)
+            except Exception as fe:
+                LOGGER.warning(f"Could not delete face image file {face_path_str}: {fe}")
+
+        LOGGER.info(f"Saved person {person_id} deleted successfully.")
+        return {"person_id": person_id, "status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        LOGGER.error(f"Failed to delete saved person {person_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ==============================================================================
 # 8. REST Route Handlers: Journey Reconstruction Engine
 # ==============================================================================
@@ -944,11 +969,14 @@ async def register_alert_rule(
 
 @app.delete("/api/active-queries/{query_id}")
 def delete_alert_rule(query_id: str):
-    # Remove from matcher
-    matcher.remove_query(query_id)
-    # Deactivate in database
-    sqlite_db.deactivate_query(query_id)
-    return {"query_id": query_id, "status": "deactivated"}
+    """Deletes/removes an active alert query rule from matcher and SQLite."""
+    try:
+        matcher.remove_query(query_id)
+        sqlite_db.delete_active_query(query_id)
+        return {"query_id": query_id, "status": "deleted"}
+    except Exception as e:
+        LOGGER.error(f"Failed to delete active query {query_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/active-queries")
 def list_alert_rules(job_id: Optional[str] = None):

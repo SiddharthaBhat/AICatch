@@ -169,11 +169,26 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
                 }}
               >
                 {/* Crop Image */}
-                <div style={{ width: "100%", height: "160px", backgroundColor: "#000", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ width: "100%", height: "160px", backgroundColor: "#000", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
                   {res.crop_path ? (
                     <img src={getMediaUrl(res.crop_path)} alt="crop" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                   ) : (
                     <User size={36} style={{ color: "var(--text-muted)" }} />
+                  )}
+                  {res.match_type && (
+                    <div style={{ position: "absolute", top: "6px", left: "6px" }}>
+                      <span style={{ 
+                        fontSize: "9px", 
+                        fontWeight: "700", 
+                        padding: "2px 6px", 
+                        borderRadius: "4px", 
+                        backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)", 
+                        color: "#ffffff", 
+                        textTransform: "uppercase" 
+                      }}>
+                        {res.match_type === "scene" ? "Scene Match" : "Object Match"}
+                      </span>
+                    </div>
                   )}
                 </div>
 

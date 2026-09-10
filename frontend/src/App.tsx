@@ -47,6 +47,7 @@ export const App: React.FC = () => {
       setJobs(data);
       const anyIndexing = data.some(j => j.status === "indexing" || j.status === "starting");
       setIsGpuIndexing(anyIndexing);
+      setActiveJobId(prev => (prev && !data.some(j => j.id === prev) ? null : prev));
     } catch (err) {
       console.error("Failed to load jobs list:", err);
     } finally {

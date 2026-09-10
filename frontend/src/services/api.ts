@@ -89,7 +89,10 @@ export const apiService = {
 
   async deleteJob(jobId: string): Promise<void> {
     const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}`, { method: "DELETE" });
-    if (!res.ok) throw new Error("Failed to delete job");
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Failed to delete job (${res.status})` }));
+      throw new Error(err.detail || `Failed to delete job (${res.status})`);
+    }
   },
 
   async uploadVideoFile(file: File): Promise<{ filename: string; path: string }> {

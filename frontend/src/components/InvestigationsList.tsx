@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Folder, Clock, Film, Layers, CheckCircle2, AlertCircle, Trash2, AlertTriangle, ArrowRight } from "lucide-react";
 import type { Job } from "../types";
 import { apiService } from "../services/api";
@@ -38,13 +38,15 @@ export const InvestigationsList: React.FC<InvestigationsListProps> = ({
     if (onCreateMulti) onCreateMulti();
     else if (onStartMultiCamera) onStartMultiCamera();
   };
-  const handleRefresh = () => {
-    if (onRefreshJobs) onRefreshJobs();
-    if (onRefresh) onRefresh();
+  const handleRefresh = async () => {
+    if (onRefreshJobs) await onRefreshJobs();
+    if (onRefresh) await onRefresh();
   };
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteSuccessMsg, setDeleteSuccessMsg] = useState<string | null>(null);
+  const isDeletingRef = useRef(false);
 
   const getStatusBadge = (status: Job["status"]) => {
     switch (status) {
@@ -68,18 +70,23 @@ export const InvestigationsList: React.FC<InvestigationsListProps> = ({
   };
 
   const handleDeleteConfirm = async () => {
-    if (!jobToDelete) return;
+    if (!jobToDelete || isDeletingRef.current) return;
+    isDeletingRef.current = true;
     setIsDeleting(true);
     setDeleteError(null);
     try {
-      await apiService.deleteJob(jobToDelete.id);
+      const targetJob = jobToDelete;
+      await apiService.deleteJob(targetJob.id);
       setJobToDelete(null);
-      handleRefresh();
+      await handleRefresh();
+      setDeleteSuccessMsg(`Investigation "${targetJob.name}" deleted successfully.`);
+      setTimeout(() => setDeleteSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error("Failed to delete job:", err);
       setDeleteError(err.message || "Failed to delete investigation.");
     } finally {
       setIsDeleting(false);
+      isDeletingRef.current = false;
     }
   };
 
@@ -105,6 +112,25 @@ export const InvestigationsList: React.FC<InvestigationsListProps> = ({
           </button>
         </div>
       </div>
+
+      {deleteSuccessMsg && (
+        <div 
+          style={{ 
+            padding: "10px 14px", 
+            borderRadius: "6px", 
+            backgroundColor: "rgba(16, 185, 129, 0.1)", 
+            border: "1px solid var(--color-success)", 
+            color: "var(--color-success)", 
+            fontSize: "13px", 
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}
+        >
+          <CheckCircle2 size={16} />
+          <span>{deleteSuccessMsg}</span>
+        </div>
+      )}
 
       {jobs.length === 0 ? (
         <div className="card" style={{ padding: "48px", textAlign: "center", color: "var(--text-secondary)" }}>
@@ -263,7 +289,7 @@ export const InvestigationsList: React.FC<InvestigationsListProps> = ({
               <button 
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => setJobToDelete(null)}
+                onClick={() => !isDeleting && setJobToDelete(null)}
                 disabled={isDeleting}
               >
                 Cancel

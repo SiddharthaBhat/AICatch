@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Video, Layers, ArrowRight, Clock, Plus, Film, AlertCircle, CheckCircle2, Trash2, AlertTriangle } from "lucide-react";
 import type { Job } from "../types";
 import { apiService } from "../services/api";
@@ -21,6 +21,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteSuccessMsg, setDeleteSuccessMsg] = useState<string | null>(null);
+  const isDeletingRef = useRef(false);
 
   const getStatusBadge = (status: Job["status"]) => {
     switch (status) {
@@ -44,20 +46,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
   };
 
   const handleDeleteConfirm = async () => {
-    if (!jobToDelete) return;
+    if (!jobToDelete || isDeletingRef.current) return;
+    isDeletingRef.current = true;
     setIsDeleting(true);
     setDeleteError(null);
     try {
-      await apiService.deleteJob(jobToDelete.id);
+      const targetJob = jobToDelete;
+      await apiService.deleteJob(targetJob.id);
       setJobToDelete(null);
       if (onRefreshJobs) {
-        onRefreshJobs();
+        await onRefreshJobs();
       }
+      setDeleteSuccessMsg(`Investigation "${targetJob.name}" deleted successfully.`);
+      setTimeout(() => setDeleteSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error("Failed to delete job:", err);
       setDeleteError(err.message || "Failed to delete investigation.");
     } finally {
       setIsDeleting(false);
+      isDeletingRef.current = false;
     }
   };
 
@@ -170,6 +177,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
             {jobs.length} case{jobs.length === 1 ? "" : "s"} registered
           </span>
         </div>
+
+        {deleteSuccessMsg && (
+          <div 
+            style={{ 
+              padding: "10px 14px", 
+              borderRadius: "6px", 
+              backgroundColor: "rgba(16, 185, 129, 0.1)", 
+              border: "1px solid var(--color-success)", 
+              color: "var(--color-success)", 
+              fontSize: "13px", 
+              marginBottom: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px"
+            }}
+          >
+            <CheckCircle2 size={16} />
+            <span>{deleteSuccessMsg}</span>
+          </div>
+        )}
 
         {jobs.length === 0 ? (
           <div 
@@ -353,7 +380,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <button 
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => setJobToDelete(null)}
+                onClick={() => !isDeleting && setJobToDelete(null)}
                 disabled={isDeleting}
               >
                 Cancel

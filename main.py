@@ -374,21 +374,29 @@ def delete_job(job_id: str):
     try:
         LOGGER.info(f"Permanently deleting investigation {job_id}...")
         # 1. Stop job decoders and threads if active
-        if job_id in job_manager.active_jobs:
+        with job_manager.lock:
+            is_active = job_id in job_manager.active_jobs
+        if is_active:
             try:
                 job_manager.cleanup_job_resources(job_id)
             except Exception as je:
                 LOGGER.warning(f"Cleanup job resources warning for {job_id}: {je}")
             with job_manager.lock:
                 job_manager.active_jobs.pop(job_id, None)
+
+        if hasattr(dispatcher, "job_stats") and job_id in dispatcher.job_stats:
+            try:
+                dispatcher.job_stats.pop(job_id, None)
+            except Exception:
+                pass
                    
-        # 2. Delete vectors from Vector DB across visual, reid, and face collections
+        # 2. Delete vectors from Vector DB across visual, reid, face, scene, and region collections
         try:
             vector_db.delete_by_job(job_id)
         except Exception as ve:
             LOGGER.warning(f"Vector DB cleanup warning for {job_id}: {ve}")
         
-        # 3. Delete media folders from disk (crops, thumbnails, clips) safely
+        # 3. Delete media folders from disk (crops, thumbnails, clips, keyframes, regions) safely
         for crop_type in ["person", "vehicle", "face", "plate"]:
             try:
                 crop_dir = media_storage.get_crop_dir(crop_type)
@@ -398,8 +406,8 @@ def delete_job(job_id: str):
             except Exception as me:
                 LOGGER.warning(f"Failed to delete crop dir for {crop_type}: {me}")
                    
-        from config import THUMBNAILS_DIR, CLIPS_DIR
-        for folder in [THUMBNAILS_DIR / job_id, CLIPS_DIR / job_id]:
+        from config import THUMBNAILS_DIR, CLIPS_DIR, KEYFRAMES_DIR, REGIONS_DIR
+        for folder in [THUMBNAILS_DIR / job_id, CLIPS_DIR / job_id, KEYFRAMES_DIR / job_id, REGIONS_DIR / job_id]:
             try:
                 if folder.exists():
                     shutil.rmtree(folder, ignore_errors=True)
@@ -415,6 +423,8 @@ def delete_job(job_id: str):
             conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id IN (SELECT id FROM folders WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM notes WHERE parent_type = 'track' AND parent_id IN (SELECT id FROM tracks WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM folder_items WHERE folder_id IN (SELECT id FROM folders WHERE job_id = ?)", (job_id,))
+            conn.execute("DELETE FROM folder_items WHERE item_type = 'track' AND item_id IN (SELECT id FROM tracks WHERE job_id = ?)", (job_id,))
+            conn.execute("DELETE FROM folder_items WHERE item_type = 'detection' AND item_id IN (SELECT d.id FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?)", (job_id,))
             conn.execute("DELETE FROM folders WHERE job_id = ?", (job_id,))
             
             # Delete saved persons & active query alerts

@@ -102,13 +102,16 @@ class JobManager:
         return job_id
 
     def start_job(self, job_id: str) -> None:
-        """Prepares and launches decoder threads for all camera sources in the job."""
+        """Prepares and launches decoder threads for all ready camera sources in the job."""
+        self.start_all_ready_cameras(job_id)
+
+    def start_all_ready_cameras(self, job_id: str) -> List[str]:
+        """Prepares and launches decoder threads for all unstarted (ready/inactive) cameras in the job.
+        
+        Idempotent: cameras already running or completed are safely skipped.
+        Returns the list of camera IDs that were newly launched.
+        """
         with self.lock:
-            # Check if job already active in memory
-            if job_id in self.active_jobs:
-                LOGGER.warning(f"Job {job_id} is already running.")
-                return
-                
             job_record = self.sqlite.get_job(job_id)
             if not job_record:
                 raise ValueError(f"Job {job_id} not found in database.")
@@ -117,58 +120,119 @@ class JobManager:
             if not cameras:
                 raise ValueError(f"Job {job_id} has no cameras registered.")
 
-            # Create in-memory Job container
-            job = Job(job_id, job_record["name"], job_record["profile"])
-            job.status = "starting"
-            self.active_jobs[job_id] = job
-            self.sqlite.update_job_status(job_id, "starting")
+            # Ensure in-memory Job container exists
+            job = self.active_jobs.get(job_id)
+            if not job:
+                job = Job(job_id, job_record["name"], job_record["profile"])
+                self.active_jobs[job_id] = job
 
-            try:
-                # Get profile settings to determine target_fps
+            started_camera_ids: List[str] = []
+            with job.lock:
                 profile_name = job.profile
                 profile_cfg = PROCESSING_PROFILES.get(profile_name, PROCESSING_PROFILES["BALANCED"])
                 sampling_rate = profile_cfg.get("sampling_rate_sec", 2.0)
                 target_fps = 1.0 / sampling_rate
-                LOGGER.info(f"Job {job_id} profile: {profile_name}. Sampling rate: {sampling_rate}s ({target_fps} FPS).")
+                skip_static_threshold = profile_cfg.get("skip_static_threshold", 0.008)
 
-                # Initialize decoders
                 for cam in cameras:
-                    if cam.get("resolution") is not None and cam.get("fps") is not None:
-                        LOGGER.info(f"Skipping camera {cam['name']} ({cam['id']}) - already indexed.")
+                    cid = cam["id"]
+                    # 1. Skip if already actively decoding
+                    existing_dec = job.decoders.get(cid)
+                    if existing_dec and existing_dec.is_alive():
+                        LOGGER.info(f"Skipping camera {cam['name']} ({cid}) - already indexing.")
                         continue
-                    decoder = VideoStreamDecoder(
-                        camera_id=cam["id"],
-                        source_path=cam["source_path"],
-                        is_live=(cam["source_type"] == "live"),
-                        target_fps=target_fps
-                    )
-                    
-                    # Update camera status in SQLite
-                    resolution = f"{decoder.width}x{decoder.height}"
-                    self.sqlite.update_camera_metadata(
-                        camera_id=cam["id"],
-                        status="active",
-                        resolution=resolution,
-                        fps=decoder.fps
-                    )
-                    
-                    job.decoders[cam["id"]] = decoder
-                    
-                # Start all decoders
-                for decoder in job.decoders.values():
-                    decoder.start()
-                    
+
+                    # 2. Skip if already completed or cancelled
+                    cam_status = str(cam.get("status", "")).lower()
+                    if cam_status in ["completed", "cancelled"]:
+                        LOGGER.info(f"Skipping camera {cam['name']} ({cid}) - status is '{cam_status}'.")
+                        continue
+
+                    try:
+                        decoder = VideoStreamDecoder(
+                            camera_id=cid,
+                            source_path=cam["source_path"],
+                            is_live=(cam["source_type"] == "live"),
+                            target_fps=target_fps,
+                            skip_static_threshold=skip_static_threshold,
+                        )
+                        resolution = f"{decoder.width}x{decoder.height}"
+                        self.sqlite.update_camera_metadata(
+                            camera_id=cid,
+                            status="active",
+                            resolution=resolution,
+                            fps=decoder.fps
+                        )
+                        job.decoders[cid] = decoder
+                        decoder.start()
+                        started_camera_ids.append(cid)
+                        LOGGER.info(f"Started decoder for camera: {cam['name']} ({cid}) in job {job_id}.")
+                    except Exception as ce:
+                        LOGGER.error(f"Failed to start decoder for camera {cid}: {ce}", exc_info=True)
+
+                if started_camera_ids or any(d.is_alive() for d in job.decoders.values()):
+                    job.status = "indexing"
+                    self.sqlite.update_job_status(job_id, "indexing")
+                    LOGGER.info(f"Job {job_id} indexing active with {len(job.decoders)} cameras.")
+
+            return started_camera_ids
+
+    def start_camera(self, job_id: str, camera_id: str) -> None:
+        """Prepares and launches decoder thread for a specific camera in the job."""
+        with self.lock:
+            job_record = self.sqlite.get_job(job_id)
+            if not job_record:
+                raise ValueError(f"Job {job_id} not found in database.")
+
+            cameras = self.sqlite.get_cameras_by_job(job_id)
+            cam = next((c for c in cameras if c["id"] == camera_id), None)
+            if not cam:
+                raise ValueError(f"Camera {camera_id} not registered for job {job_id}.")
+
+            if not cam.get("source_path"):
+                raise ValueError(f"Camera {camera_id} has no source video path.")
+
+            # Ensure in-memory Job container exists
+            job = self.active_jobs.get(job_id)
+            if not job:
+                job = Job(job_id, job_record["name"], job_record["profile"])
+                self.active_jobs[job_id] = job
+
+            with job.lock:
+                # Check if camera decoder is already running
+                existing_dec = job.decoders.get(camera_id)
+                if existing_dec and existing_dec.is_alive():
+                    LOGGER.info(f"Camera {camera_id} ({cam['name']}) is already indexing.")
+                    return
+
+                profile_name = job.profile
+                profile_cfg = PROCESSING_PROFILES.get(profile_name, PROCESSING_PROFILES["BALANCED"])
+                sampling_rate = profile_cfg.get("sampling_rate_sec", 2.0)
+                target_fps = 1.0 / sampling_rate
+                skip_static_threshold = profile_cfg.get("skip_static_threshold", 0.008)
+
+                decoder = VideoStreamDecoder(
+                    camera_id=cam["id"],
+                    source_path=cam["source_path"],
+                    is_live=(cam["source_type"] == "live"),
+                    target_fps=target_fps,
+                    skip_static_threshold=skip_static_threshold,
+                )
+
+                resolution = f"{decoder.width}x{decoder.height}"
+                self.sqlite.update_camera_metadata(
+                    camera_id=cam["id"],
+                    status="active",
+                    resolution=resolution,
+                    fps=decoder.fps
+                )
+
+                job.decoders[cam["id"]] = decoder
+                decoder.start()
+
                 job.status = "indexing"
                 self.sqlite.update_job_status(job_id, "indexing")
-                LOGGER.info(f"Started video analytics indexing for job {job_id}.")
-                
-            except Exception as e:
-                LOGGER.error(f"Failed to start job {job_id}: {e}", exc_info=True)
-                job.status = "failed"
-                job.error_msg = str(e)
-                self.sqlite.update_job_status(job_id, "failed", str(e))
-                self.cleanup_job_resources(job_id)
-                raise e
+                LOGGER.info(f"Started independent camera indexing: {cam['name']} ({cam['id']}) in job {job_id}.")
 
     def pause_job(self, job_id: str) -> None:
         """Pauses frame decoding threads for the job."""
@@ -235,7 +299,8 @@ class JobManager:
         self,
         job_id: str,
         vector_db: Optional[Any] = None,
-        dispatcher: Optional[Any] = None
+        dispatcher: Optional[Any] = None,
+        gpu_scheduler: Optional[Any] = None
     ) -> bool:
         """Transitions job through completion stages with vector write and read-back verification."""
         with self.lock:
@@ -244,11 +309,27 @@ class JobManager:
             # 1. Transition to DETECTION_COMPLETE & TRACKING_COMPLETE
             self.update_job_stage(job_id, "TRACKING_COMPLETE")
             
-            # 2. Wait for dispatcher to flush all queued items to SQLite & Chroma
+            # 2. Wait for enrichment pool and dispatcher to flush all queued items to SQLite & Chroma
             self.update_job_stage(job_id, "EMBEDDING_COMPLETE")
+            target_scheduler = gpu_scheduler or getattr(self, "gpu_scheduler", None)
+            if target_scheduler and hasattr(target_scheduler, "flush_enrichment_pool"):
+                target_scheduler.flush_enrichment_pool(timeout=15.0)
             if dispatcher:
                 dispatcher.flush_and_wait(timeout=15.0)
+            from storage.media_storage import MediaStorage
+            MediaStorage.flush_and_wait(timeout=15.0)
             self.update_job_stage(job_id, "PERSISTENCE_COMPLETE")
+
+            # 2.5 Index Scene Keyframes & Spatial Regions for temporal scene coverage
+            if gpu_scheduler is not None and vector_db is not None:
+                try:
+                    from pipeline.scene_indexer import SceneIndexer
+                    scene_media = MediaStorage()
+                    indexer = SceneIndexer(self.sqlite, vector_db, scene_media, gpu_scheduler=gpu_scheduler)
+                    indexer.index_job_scenes(job_id=job_id, force_reindex=False)
+                    MediaStorage.flush_and_wait(timeout=15.0)
+                except Exception as sie:
+                    LOGGER.warning(f"Scene & Region indexing during job completion note: {sie}")
             
             # 3. Perform Vector write, read-back, and Lineage verification
             verification_errors = []
@@ -358,6 +439,10 @@ class JobManager:
             # Set state to INDEXED
             self.update_job_stage(job_id, "INDEXED", diagnostics=diagnostics)
             LOGGER.info("INGESTION_DIAGNOSTICS %s", json.dumps(diagnostics))
+            try:
+                self.sqlite.update_job_progress(job_id, processed_sec=total_duration, duration_sec=total_duration, fps=0.0)
+            except Exception as pe:
+                LOGGER.warning("Failed to record final job progress in sqlite: %s", pe)
             self.cleanup_job_resources(job_id)
             return True
 
@@ -389,8 +474,13 @@ class JobManager:
                 decoder.stop_stream()
                 if decoder.is_alive():
                     decoder.join(timeout=3.0)
-                # Mark camera as inactive in SQLite
-                self.sqlite.update_camera_metadata(cam_id, "inactive", f"{decoder.width}x{decoder.height}", decoder.fps)
+                # Keep completed status if camera finished successfully or was already completed; otherwise set inactive
+                existing_cam = self.sqlite.get_camera(cam_id)
+                if existing_cam and existing_cam.get("status") == "completed":
+                    cam_status = "completed"
+                else:
+                    cam_status = "completed" if getattr(decoder, "has_finished", False) else "inactive"
+                self.sqlite.update_camera_metadata(cam_id, cam_status, f"{decoder.width}x{decoder.height}", decoder.fps)
             except Exception as e:
                 LOGGER.error(f"Error stopping decoder for camera {cam_id}: {e}")
                 
@@ -400,21 +490,16 @@ class JobManager:
             
         LOGGER.info(f"Finished resource cleanup for job {job_id}.")
 
-                
-        # Remove from active jobs mapping
-        with self.lock:
-            self.active_jobs.pop(job_id, None)
-            
-        LOGGER.info(f"Finished resource cleanup for job {job_id}.")
-
     def get_active_decoders(self) -> List[VideoStreamDecoder]:
-        """Gathers all decoder instances that are currently decoding frames."""
+        """Gathers all decoder instances that are currently decoding frames or have queued frames."""
         decoders = []
         with self.lock:
             for job in self.active_jobs.values():
                 with job.lock:
                     if job.status == "indexing":
-                        decoders.extend(job.decoders.values())
+                        for dec in job.decoders.values():
+                            if dec.is_alive() or not dec.frame_queue.empty():
+                                decoders.append(dec)
         return decoders
 
     def get_job_progress(self, job_id: str) -> Dict[str, Any]:
@@ -453,8 +538,15 @@ class JobManager:
             }
             
         # For non-active states, return database static metrics
-        if status == "completed":
-            return {"status": "completed", "progress": 1.0}
+        if str(status).lower() in ["completed", "indexed"]:
+            final_dur = job_record.get("duration_sec") or job_record.get("processed_sec") or 0.0
+            return {
+                "status": "completed",
+                "progress": 1.0,
+                "processed_sec": final_dur,
+                "duration_sec": final_dur,
+                "is_live": False
+            }
             
         duration = job_record.get("duration_sec", 0.0)
         processed = job_record.get("processed_sec", 0.0)

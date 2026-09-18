@@ -18,6 +18,7 @@ import numpy as np
 from config import (
     MAX_RTSP_RECONNECT_ATTEMPTS, RTSP_RECONNECT_BACKOFF_FACTOR, GPU_QUEUE_LIMIT
 )
+from utils.monitor import PerformanceMonitorInstance
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class VideoStreamDecoder(threading.Thread):
         motion_threshold: float = 0.005,
         pre_event_buffer_sec: float = 2.0,
         post_event_buffer_sec: float = 4.0,
+        skip_static_threshold: Optional[float] = None,
     ):
         super().__init__(name=f"Decoder-{camera_id}", daemon=True)
         self.camera_id = camera_id
@@ -46,6 +48,10 @@ class VideoStreamDecoder(threading.Thread):
         self.motion_threshold = motion_threshold
         self.pre_event_buffer_sec = pre_event_buffer_sec
         self.post_event_buffer_sec = post_event_buffer_sec
+        self.skip_static_threshold = skip_static_threshold
+        self.static_filtered = (skip_static_threshold is not None and skip_static_threshold > 0)
+        self.background_ref: Optional[np.ndarray] = None
+        self.frames_skipped_static: int = 0
         
         # Bounded frame queue: holds (frame_idx, timestamp, frame_bgr)
         self.frame_queue = queue.Queue(maxsize=GPU_QUEUE_LIMIT)
@@ -224,6 +230,18 @@ class VideoStreamDecoder(threading.Thread):
                 frame_bgr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
                     (self.target_height, self.target_width, 3)
                 )
+
+                # Off-scheduler static scene filtering (camera-local, strictly chronological)
+                if self.skip_static_threshold is not None and self.skip_static_threshold > 0:
+                    try:
+                        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY) if len(frame_bgr.shape) == 3 and frame_bgr.shape[2] == 3 else frame_bgr
+                        if self.is_scene_static(gray, self.skip_static_threshold):
+                            self.frames_skipped_static += 1
+                            PerformanceMonitorInstance.update_counts(decoded=1)
+                            continue
+                    except Exception as ex:
+                        LOGGER.warning(f"Static filter error on camera {self.camera_id} frame {frame_idx}: {ex}")
+
                 data_packet = (frame_idx, timestamp, frame_bgr)
                 
                 # Adaptive Motion Gating and Forensic Event Buffer
@@ -235,7 +253,7 @@ class VideoStreamDecoder(threading.Thread):
                         self._pre_event_buffer = collections.deque(maxlen=buf_len)
                         self._in_active_event = False
 
-                    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY) if len(frame_bgr.shape) == 3 and frame_bgr.shape[2] == 3 else frame_bgr
                     resized = cv2.resize(gray, (160, 90))
                     resized_blur = cv2.GaussianBlur(resized, (5, 5), 0)
                     
@@ -332,3 +350,30 @@ class VideoStreamDecoder(threading.Thread):
         except queue.Empty:
             pass
         LOGGER.info(f"Decoder {self.camera_id} stop requested.")
+
+    def update_background(self, gray_frame: np.ndarray) -> None:
+        """Downsamples and stores reference background frame for static scene filtering."""
+        resized = cv2.resize(gray_frame, (320, 180))
+        self.background_ref = cv2.GaussianBlur(resized, (5, 5), 0)
+
+    def is_scene_static(self, gray_frame: np.ndarray, threshold: float = 0.008) -> bool:
+        """Compares current frame against cached background to check if the scene is static."""
+        if self.background_ref is None:
+            self.update_background(gray_frame)
+            return False
+            
+        resized = cv2.resize(gray_frame, (320, 180))
+        current_blur = cv2.GaussianBlur(resized, (5, 5), 0)
+        
+        ref = self.background_ref
+        diff = cv2.absdiff(ref, current_blur)
+        _, thresh = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+        
+        changed_pixels = cv2.countNonZero(thresh)
+        total_pixels = thresh.size
+        ratio = changed_pixels / total_pixels
+        
+        # Update background reference progressively to handle slow lighting changes
+        cv2.addWeighted(ref, 0.95, current_blur, 0.05, 0, dst=ref)
+        
+        return ratio < threshold

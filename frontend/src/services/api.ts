@@ -67,6 +67,16 @@ export const apiService = {
     if (!res.ok) throw new Error("Failed to start job");
   },
 
+  async startAllCameras(jobId: string): Promise<void> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/start-all`, { method: "POST" });
+    if (!res.ok) throw new Error("Failed to start all cameras");
+  },
+
+  async startCamera(jobId: string, cameraId: string): Promise<void> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}/start`, { method: "POST" });
+    if (!res.ok) throw new Error(`Failed to start camera ${cameraId}`);
+  },
+
   async pauseJob(jobId: string): Promise<void> {
     const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/pause`, { method: "POST" });
     if (!res.ok) throw new Error("Failed to pause job");

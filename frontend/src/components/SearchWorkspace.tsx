@@ -2,13 +2,62 @@ import React, { useState, useEffect } from "react";
 import { 
   Search, Image as ImageIcon, Play, 
   FolderPlus, AlertTriangle, 
-  X, Sliders, User, FileText, Loader2, Layers
+  X, Sliders, FileText, Loader2, Layers
 } from "lucide-react";
 import { apiService, getMediaUrl } from "../services/api";
 import { SubjectSummaryModal } from "./SubjectSummaryModal";
 import { ForensicVideoViewer } from "./ForensicVideoViewer";
 import type { ObservationTarget } from "./ForensicVideoViewer";
 import type { Camera } from "../types";
+
+interface DetectionCropImageProps {
+  cropPath?: string;
+  alt?: string;
+  style?: React.CSSProperties;
+}
+
+const DetectionCropImage: React.FC<DetectionCropImageProps> = ({
+  cropPath,
+  alt = "Detection crop",
+  style = { width: "100%", height: "100%", objectFit: "contain" }
+}) => {
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    setLoadError(false);
+  }, [cropPath]);
+
+  // If crop_path is missing, empty, or failed to load, display neutral missing-evidence state (never a dummy avatar)
+  if (!cropPath || loadError) {
+    return (
+      <div 
+        style={{ 
+          width: "100%", 
+          height: "100%", 
+          display: "flex", 
+          alignItems: "center", 
+          justifyContent: "center", 
+          color: "var(--text-muted)", 
+          fontSize: "11px", 
+          textAlign: "center",
+          padding: "8px",
+          backgroundColor: "#0d1520"
+        }}
+      >
+        <span>No detection crop available</span>
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src={getMediaUrl(cropPath)} 
+      alt={alt} 
+      style={style} 
+      onError={() => setLoadError(true)} 
+    />
+  );
+};
 
 interface SearchWorkspaceProps {
   jobId: string | null;
@@ -267,7 +316,24 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       setSearched(true);
       const matches = await apiService.executeForensicSearch(searchParams);
       const accepted = matches.filter(m => (m.similarity || 0) >= 0.55);
-      setResults(accepted);
+
+      // Group visual search matches by track to avoid identical frame duplicates
+      const groupedSimilar: any[] = [];
+      const seenTracks = new Set<string>();
+      for (const match of accepted) {
+        const rawId = match.track_uuid || match.track_id;
+        if (!rawId) {
+          groupedSimilar.push(match);
+          continue;
+        }
+        const isGlobalUuid = typeof rawId === "string" && (rawId.includes("-") || rawId.startsWith("tr_"));
+        const dedupeKey = isGlobalUuid ? rawId : `${match.camera_id || "cam"}_${rawId}`;
+        if (!seenTracks.has(dedupeKey)) {
+          seenTracks.add(dedupeKey);
+          groupedSimilar.push(match);
+        }
+      }
+      setResults(groupedSimilar);
     } catch (err: any) {
       setErrorMsg(err.message || "Find similar search failed");
     } finally {
@@ -497,8 +563,13 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
           </div>
         ) : results.length > 0 ? (
           <div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px" }}>
-              Showing {results.length} validated observation(s)
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "12px" }}>
+              <span style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
+                Ranked Match Results ({results.length})
+              </span>
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Showing {results.length} validated observation(s)
+              </span>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "16px" }}>
@@ -523,17 +594,13 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                     }}
                     onClick={() => { setSelectedResult(res); handleOpenVideoViewer(res); }}
                   >
-                    {/* Thumbnail */}
+                    {/* Real Person / Object Crop Thumbnail */}
                     <div 
                       style={{ width: "100%", height: "140px", backgroundColor: "#000", borderRadius: "6px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
                       onClick={(e) => { e.stopPropagation(); handleOpenVideoViewer(res); }}
                       title="Click to open original video at this timestamp"
                     >
-                      {res.crop_path ? (
-                        <img src={getMediaUrl(res.crop_path)} alt="crop" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-                      ) : (
-                        <User size={32} style={{ color: "var(--text-muted)" }} />
-                      )}
+                      <DetectionCropImage cropPath={res.crop_path} alt="Detection crop" />
 
                       <div style={{ position: "absolute", top: "6px", left: "6px", display: "flex", gap: "4px" }}>
                         <span style={{ fontSize: "9px", fontWeight: "700", padding: "2px 6px", borderRadius: "4px", backgroundColor: "rgba(0,0,0,0.7)", color: "var(--color-accent)", textTransform: "uppercase" }}>
@@ -557,11 +624,23 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
 
                     {/* Metadata */}
                     <div>
-                      <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {camName}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {camName}
+                        </span>
+                        {typeof res.similarity === "number" && (
+                          <span style={{ fontSize: "11px", color: "var(--color-success)", fontWeight: "700" }}>
+                            {(res.similarity * 100).toFixed(0)}% Match
+                          </span>
+                        )}
                       </div>
-                      <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                        Time: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        <span>Time: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"}</span>
+                        {(res.label || res.track_id || res.track_uuid) && (
+                          <span style={{ color: "var(--text-muted)", fontSize: "10px", fontFamily: "monospace" }}>
+                            {res.label || (typeof res.track_id === "number" || (typeof res.track_id === "string" && !res.track_id.includes("-")) ? `Track #${res.track_id}` : `Track ${String(res.track_uuid || res.track_id).slice(0, 8)}`)}
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -573,7 +652,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                         style={{ flex: 1, fontSize: "11px", padding: "6px 8px", display: "flex", alignItems: "center", justifyContent: "center", gap: "4px" }}
                         onClick={(e) => { e.stopPropagation(); handleOpenVideoViewer(res); }}
                       >
-                        <Play size={11} /> View Video
+                        <Play size={11} /> Jump to Video
                       </button>
                       <button
                         type="button"
@@ -646,11 +725,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
             onClick={() => handleOpenVideoViewer(selectedResult)}
             title="Click to open video viewer"
           >
-            {selectedResult.crop_path ? (
-              <img src={getMediaUrl(selectedResult.crop_path)} alt="detail" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-            ) : (
-              <User size={48} style={{ color: "var(--text-muted)" }} />
-            )}
+            <DetectionCropImage cropPath={selectedResult.crop_path} alt="Observation detail crop" />
           </div>
 
           {/* Meta Info */}

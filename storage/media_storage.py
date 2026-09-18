@@ -9,36 +9,117 @@ import shutil
 import logging
 import time
 import os
-from typing import Union, List
+import queue
+import threading
+from typing import Union, List, Optional
 import cv2
 import numpy as np
 
 from config import (
     MEDIA_DIR, UPLOAD_DIR, CLIPS_DIR, THUMBNAILS_DIR,
-    PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR
+    PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR, REGIONS_DIR
 )
 
 LOGGER = logging.getLogger(__name__)
 
+# Default JPEG quality (preserved at 95)
+JPEG_QUALITY = 95
+THUMBNAIL_QUALITY = 95
+
 class MediaStorage:
+    _write_queue: Optional[queue.Queue] = None
+    _writer_thread: Optional[threading.Thread] = None
+    _writer_stop: bool = False
+    _class_lock: threading.Lock = threading.Lock()
+    _created_dirs: set = set()
+
+    @classmethod
+    def _ensure_dir_cached(cls, target_dir: Path) -> None:
+        """Caches already-created directory paths to prevent repeated NTFS mkdir syscalls."""
+        dir_key = str(target_dir)
+        if dir_key not in cls._created_dirs:
+            with cls._class_lock:
+                if dir_key not in cls._created_dirs:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    cls._created_dirs.add(dir_key)
+
     def __init__(self):
         self.base_dir = MEDIA_DIR.resolve()
         self.ensure_dirs()
+        self._ensure_writer_started()
+
+    @classmethod
+    def _ensure_writer_started(cls) -> None:
+        """Starts a shared background disk writer daemon if not already running."""
+        with cls._class_lock:
+            if cls._write_queue is None:
+                cls._write_queue = queue.Queue(maxsize=2048)
+                cls._writer_stop = False
+                cls._writer_thread = threading.Thread(
+                    target=cls._disk_writer_loop,
+                    daemon=True,
+                    name="MediaStorageWriter"
+                )
+                cls._writer_thread.start()
+
+    @classmethod
+    def _disk_writer_loop(cls) -> None:
+        """Background loop that executes cv2.imwrite off the main inference threads."""
+        while not cls._writer_stop:
+            try:
+                task = cls._write_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if task is None:
+                cls._write_queue.task_done()
+                break
+            dest_path, image_data, encode_params = task
+            try:
+                cv2.imwrite(str(dest_path), image_data, encode_params)
+            except Exception as e:
+                LOGGER.error(f"Async disk write error for {dest_path}: {e}")
+            finally:
+                cls._write_queue.task_done()
+
+    @classmethod
+    def flush_and_wait(cls, timeout: float = 15.0) -> bool:
+        """Waits until all pending image writes are flushed to disk."""
+        if cls._write_queue is None:
+            return True
+        start = time.time()
+        while cls._write_queue.unfinished_tasks > 0:
+            if time.time() - start > timeout:
+                LOGGER.warning(f"MediaStorage write queue flush timed out with {cls._write_queue.unfinished_tasks} tasks pending.")
+                return False
+            time.sleep(0.02)
+        return True
+
+    @classmethod
+    def stop(cls) -> None:
+        """Flushes remaining writes and stops the background writer thread."""
+        cls.flush_and_wait(timeout=5.0)
+        cls._writer_stop = True
+        if cls._write_queue is not None:
+            try:
+                cls._write_queue.put_nowait(None)
+            except Exception:
+                pass
 
     def ensure_dirs(self) -> None:
         """Create media directory layout."""
         for folder in [
             UPLOAD_DIR, CLIPS_DIR, THUMBNAILS_DIR,
-            PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR
+            PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR, REGIONS_DIR
         ]:
             folder.mkdir(parents=True, exist_ok=True)
 
     def sanitize_path(self, target_path: Union[str, Path]) -> Path:
         """Enforces that all operations occur strictly inside the base media directory to prevent directory traversal attacks."""
-        resolved = Path(target_path).resolve()
-        if not str(resolved).startswith(str(self.base_dir)):
-            raise ValueError(f"Path traversal detected! Path outside of media directory: {resolved}")
-        return resolved
+        norm_str = os.path.abspath(os.path.normpath(str(target_path)))
+        base_str = str(self.base_dir)
+        if not norm_str.lower().startswith(base_str.lower()):
+            raise ValueError(f"Path traversal detected! Path outside of media directory: {norm_str}")
+        return Path(norm_str)
 
     def save_upload(self, temp_file_path: Union[str, Path], filename: str) -> Path:
         """Saves a uploaded video file into the upload folder."""
@@ -72,7 +153,8 @@ class MediaStorage:
         job_id: str,
         camera_id: str,
         track_id: Union[int, str],
-        frame_idx: int
+        frame_idx: int,
+        sync: bool = False
     ) -> Path:
         """Saves a cropped BGR numpy image to the filesystem with a predictable path structure."""
         crop_dir = self.get_crop_dir(entity_type)
@@ -83,16 +165,22 @@ class MediaStorage:
         clean_cam = Path(camera_id).name
         
         target_dir = crop_dir / clean_job / clean_cam
-        target_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir_cached(target_dir)
         
         filename = f"track_{track_id}_frame_{frame_idx}.jpg"
         dest_path = target_dir / filename
         dest_path = self.sanitize_path(dest_path)
         
-        # Save image using opencv
-        success = cv2.imwrite(str(dest_path), image_data)
-        if not success:
-            raise IOError(f"Failed to write image crop to: {dest_path}")
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        if sync or self._write_queue is None:
+            success = cv2.imwrite(str(dest_path), image_data, encode_params)
+            if not success:
+                raise IOError(f"Failed to write image crop to: {dest_path}")
+        else:
+            try:
+                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+            except queue.Full:
+                cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
 
@@ -101,23 +189,30 @@ class MediaStorage:
         image_data: np.ndarray,
         job_id: str,
         camera_id: str,
-        frame_idx: int
+        frame_idx: int,
+        sync: bool = False
     ) -> Path:
         """Saves a downsampled frame thumbnail."""
         clean_job = Path(job_id).name
         clean_cam = Path(camera_id).name
         
         target_dir = THUMBNAILS_DIR / clean_job / clean_cam
-        target_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir_cached(target_dir)
         
         filename = f"frame_{frame_idx}.jpg"
         dest_path = target_dir / filename
         dest_path = self.sanitize_path(dest_path)
         
-        # Save image
-        success = cv2.imwrite(str(dest_path), image_data)
-        if not success:
-            raise IOError(f"Failed to write thumbnail to: {dest_path}")
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), THUMBNAIL_QUALITY]
+        if sync or self._write_queue is None:
+            success = cv2.imwrite(str(dest_path), image_data, encode_params)
+            if not success:
+                raise IOError(f"Failed to write thumbnail to: {dest_path}")
+        else:
+            try:
+                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+            except queue.Full:
+                cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
 
@@ -127,22 +222,63 @@ class MediaStorage:
         job_id: str,
         camera_id: str,
         frame_idx: int,
-        timestamp: float
+        timestamp: float,
+        sync: bool = False
     ) -> Path:
         """Saves a full-frame scene keyframe to the keyframes directory."""
         clean_job = Path(job_id).name
         clean_cam = Path(camera_id).name
         
         target_dir = KEYFRAMES_DIR / clean_job / clean_cam
-        target_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir_cached(target_dir)
         
         filename = f"keyframe_f{frame_idx}_t{int(timestamp * 1000)}.jpg"
         dest_path = target_dir / filename
         dest_path = self.sanitize_path(dest_path)
         
-        success = cv2.imwrite(str(dest_path), image_data)
-        if not success:
-            raise IOError(f"Failed to write scene keyframe to: {dest_path}")
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        if sync or self._write_queue is None:
+            success = cv2.imwrite(str(dest_path), image_data, encode_params)
+            if not success:
+                raise IOError(f"Failed to write scene keyframe to: {dest_path}")
+        else:
+            try:
+                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+            except queue.Full:
+                cv2.imwrite(str(dest_path), image_data, encode_params)
+            
+        return dest_path
+
+    def save_region(
+        self,
+        image_data: np.ndarray,
+        job_id: str,
+        camera_id: str,
+        frame_idx: int,
+        tile_idx: int,
+        sync: bool = False
+    ) -> Path:
+        """Saves a spatial region/tile crop to the regions directory."""
+        clean_job = Path(job_id).name
+        clean_cam = Path(camera_id).name
+        
+        target_dir = REGIONS_DIR / clean_job / clean_cam
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        filename = f"region_f{frame_idx}_t{tile_idx}.jpg"
+        dest_path = target_dir / filename
+        dest_path = self.sanitize_path(dest_path)
+        
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        if sync or self._write_queue is None:
+            success = cv2.imwrite(str(dest_path), image_data, encode_params)
+            if not success:
+                raise IOError(f"Failed to write region crop to: {dest_path}")
+        else:
+            try:
+                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+            except queue.Full:
+                cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
 
@@ -235,8 +371,8 @@ class MediaStorage:
             except Exception as me:
                 LOGGER.warning(f"Failed to delete crop dir for {crop_type}: {me}")
                 
-        # Thumbnails & Clips
-        for folder in [THUMBNAILS_DIR / clean_job, CLIPS_DIR / clean_job]:
+        # Thumbnails, Clips, Keyframes & Regions
+        for folder in [THUMBNAILS_DIR / clean_job, CLIPS_DIR / clean_job, KEYFRAMES_DIR / clean_job, REGIONS_DIR / clean_job]:
             try:
                 if folder.exists():
                     shutil.rmtree(str(folder))

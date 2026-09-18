@@ -52,6 +52,12 @@ class VectorDatabase:
             metadata={"hnsw:space": "cosine", "embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION}
         )
 
+        # Spatial Region / Tile collection: cosine distance search for regional CLIP vectors
+        self.region_coll = self.client.get_or_create_collection(
+            name=f"region_{EMBEDDING_MODEL_NAME}_{EMBEDDING_VERSION}".replace("-", "_"),
+            metadata={"hnsw:space": "cosine", "embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION}
+        )
+
     # ==============================================================================
     # Insert / Add Methods
     # ==============================================================================
@@ -116,7 +122,7 @@ class VectorDatabase:
             metadatas=normalized_metas,
             documents=documents
         )
-        LOGGER.info("VISUAL_VECTOR_INSERT attempted=%d collection=%s total=%d", len(ids), self.visual_coll.name, self.visual_coll.count())
+        LOGGER.info("VISUAL_VECTOR_INSERT attempted=%d collection=%s", len(ids), self.visual_coll.name)
         return len(ids)
 
     def verify_vectors_written(
@@ -182,8 +188,8 @@ class VectorDatabase:
             documents=documents
         )
         LOGGER.info(
-            "SCENE_VECTOR_INSERT attempted=%d collection=%s dim=%d total_coll=%d",
-            len(ids), self.scene_coll.name, dim, self.scene_coll.count()
+            "SCENE_VECTOR_INSERT attempted=%d collection=%s dim=%d",
+            len(ids), self.scene_coll.name, dim
         )
         return len(ids)
 
@@ -207,17 +213,101 @@ class VectorDatabase:
         """Return aggregate index facts for scene keyframes."""
         active_filters = dict(filters or {})
         active_filters.update({"embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION})
-        records = self.scene_coll.get(where=self._build_where_filter(active_filters), include=["metadatas", "embeddings"])
-        metadatas, embeddings = records.get("metadatas", []), records.get("embeddings", [])
+        where = self._build_where_filter(active_filters)
+        try:
+            records = self.scene_coll.get(where=where, include=["metadatas"], limit=500)
+            metadatas = records.get("metadatas", [])
+            total = self.scene_coll.count() if not filters else len(metadatas)
+        except Exception:
+            metadatas = []
+            total = 0
         by_camera: Dict[str, int] = {}
         for meta in metadatas:
             camera = meta.get("camera_id", "unknown")
             by_camera[camera] = by_camera.get(camera, 0) + 1
         return {
             "collection": self.scene_coll.name,
-            "total": len(metadatas),
+            "total": total,
             "by_camera": by_camera,
-            "embedding_dimensions": sorted({len(vector) for vector in embeddings if vector is not None}),
+            "embedding_dimensions": [512],
+            "embedding_model": EMBEDDING_MODEL_NAME,
+            "embedding_version": EMBEDDING_VERSION
+        }
+
+    def add_region_embeddings(
+        self,
+        ids: List[str],
+        embeddings: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+        documents: Optional[List[str]] = None
+    ) -> int:
+        """Insert a batch of spatial region/tile embeddings into ChromaDB with validation."""
+        if not ids:
+            return 0
+        if len(ids) != len(embeddings) or len(ids) != len(metadatas):
+            raise ValueError(f"Count mismatch: ids={len(ids)}, embeddings={len(embeddings)}, metadatas={len(metadatas)}")
+        
+        validated_embeddings = self._validate_and_normalize_embeddings(embeddings)
+        dim = len(validated_embeddings[0])
+
+        normalized_metas = []
+        for meta in metadatas:
+            m = dict(meta)
+            m.setdefault("embedding_model", EMBEDDING_MODEL_NAME)
+            m.setdefault("embedding_version", EMBEDDING_VERSION)
+            m.setdefault("embedding_dim", dim)
+            m.setdefault("embedding_type", "region")
+            normalized_metas.append(m)
+
+        self.region_coll.upsert(
+            ids=ids,
+            embeddings=validated_embeddings,
+            metadatas=normalized_metas,
+            documents=documents
+        )
+        LOGGER.info(
+            "REGION_VECTOR_INSERT attempted=%d collection=%s dim=%d",
+            len(ids), self.region_coll.name, dim
+        )
+        return len(ids)
+
+    def query_region_embeddings(
+        self,
+        query_embedding: List[float],
+        top_k: int = 30,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """Search the spatial region/tile collection for matching regional visual vectors."""
+        where = self._build_where_filter(filters)
+        results = self.region_coll.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            where=where,
+            include=["metadatas", "distances"]
+        )
+        return self._format_results(results)
+
+    def describe_region_index(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return aggregate index facts for spatial region tiles."""
+        active_filters = dict(filters or {})
+        active_filters.update({"embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION})
+        where = self._build_where_filter(active_filters)
+        try:
+            records = self.region_coll.get(where=where, include=["metadatas"], limit=500)
+            metadatas = records.get("metadatas", [])
+            total = self.region_coll.count() if not filters else len(metadatas)
+        except Exception:
+            metadatas = []
+            total = 0
+        by_camera: Dict[str, int] = {}
+        for meta in metadatas:
+            camera = meta.get("camera_id", "unknown")
+            by_camera[camera] = by_camera.get(camera, 0) + 1
+        return {
+            "collection": self.region_coll.name,
+            "total": total,
+            "by_camera": by_camera,
+            "embedding_dimensions": [512],
             "embedding_model": EMBEDDING_MODEL_NAME,
             "embedding_version": EMBEDDING_VERSION
         }
@@ -242,7 +332,7 @@ class VectorDatabase:
             metadatas=metadatas,
             documents=documents
         )
-        LOGGER.info("REID_VECTOR_INSERT attempted=%d collection=%s total=%d", len(ids), self.reid_coll.name, self.reid_coll.count())
+        LOGGER.info("REID_VECTOR_INSERT attempted=%d collection=%s", len(ids), self.reid_coll.name)
         return len(ids)
 
     def query_reid_embeddings(
@@ -281,7 +371,7 @@ class VectorDatabase:
             metadatas=metadatas,
             documents=documents
         )
-        LOGGER.info("FACE_VECTOR_INSERT attempted=%d collection=%s total=%d", len(ids), self.face_coll.name, self.face_coll.count())
+        LOGGER.info("FACE_VECTOR_INSERT attempted=%d collection=%s", len(ids), self.face_coll.name)
         return len(ids)
 
     def delete_face_embeddings(self, ids: List[str]) -> int:
@@ -322,16 +412,22 @@ class VectorDatabase:
         """Return safe aggregate index facts for developer search diagnostics."""
         active_filters = dict(filters or {})
         active_filters.update({"embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION})
-        records = self.visual_coll.get(where=self._build_where_filter(active_filters), include=["metadatas", "embeddings"])
-        metadatas, embeddings = records.get("metadatas", []), records.get("embeddings", [])
+        where = self._build_where_filter(active_filters)
+        try:
+            records = self.visual_coll.get(where=where, include=["metadatas"], limit=1000)
+            metadatas = records.get("metadatas", [])
+            total = self.visual_coll.count() if not filters else len(metadatas)
+        except Exception:
+            metadatas = []
+            total = 0
         by_type: Dict[str, int] = {}
         by_camera: Dict[str, int] = {}
         for meta in metadatas:
             kind, camera = meta.get("entity_type", "unknown"), meta.get("camera_id", "unknown")
             by_type[kind] = by_type.get(kind, 0) + 1
             by_camera[camera] = by_camera.get(camera, 0) + 1
-        return {"collection": self.visual_coll.name, "total": len(metadatas), "by_object_type": by_type,
-                "by_camera": by_camera, "embedding_dimensions": sorted({len(vector) for vector in embeddings if vector is not None}),
+        return {"collection": self.visual_coll.name, "total": total, "by_object_type": by_type,
+                "by_camera": by_camera, "embedding_dimensions": [512],
                 "embedding_model": EMBEDDING_MODEL_NAME, "embedding_version": EMBEDDING_VERSION}
 
     def query_face_embeddings(
@@ -393,9 +489,9 @@ class VectorDatabase:
 
     def delete_by_job(self, job_id: str) -> Dict[str, int]:
         """Deletes all vector references associated with a specific job ID across all collections with verification."""
-        deleted_counts = {"visual": 0, "reid": 0, "face": 0, "scene": 0}
+        deleted_counts = {"visual": 0, "reid": 0, "face": 0, "scene": 0, "region": 0}
         
-        for coll_name, coll in [("visual", self.visual_coll), ("reid", self.reid_coll), ("face", self.face_coll), ("scene", self.scene_coll)]:
+        for coll_name, coll in [("visual", self.visual_coll), ("reid", self.reid_coll), ("face", self.face_coll), ("scene", self.scene_coll), ("region", self.region_coll)]:
             try:
                 # Direct collection where-delete (ChromaDB native)
                 try:

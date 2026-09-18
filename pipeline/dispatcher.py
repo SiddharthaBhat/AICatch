@@ -14,6 +14,7 @@ from storage.sqlite_db import SQLiteDatabase
 from storage.vector_db import VectorDatabase
 from pipeline.matcher import ActiveQueryMatcher
 from utils.monitor import PerformanceMonitorInstance
+from config import VERIFY_VECTORS_ON_FLUSH
 
 LOGGER = logging.getLogger(__name__)
 
@@ -178,6 +179,12 @@ class ResultDispatcher:
                 try:
                     result = self.db_write_queue.get(timeout=0.2)
                     accumulated_results.append(result)
+                    # Drain any immediately available items up to batch_size
+                    while len(accumulated_results) < batch_size:
+                        try:
+                            accumulated_results.append(self.db_write_queue.get_nowait())
+                        except queue.Empty:
+                            break
                 except queue.Empty:
                     pass
                 
@@ -358,7 +365,8 @@ class ResultDispatcher:
         if reid_ids:
             try:
                 self.vector.add_reid_embeddings(ids=reid_ids, embeddings=reid_embs, metadatas=reid_metas)
-                self.vector.verify_vectors_written("reid", reid_ids, sample_size=5)
+                if VERIFY_VECTORS_ON_FLUSH:
+                    self.vector.verify_vectors_written("reid", reid_ids, sample_size=5)
             except Exception as re_err:
                 LOGGER.error(f"Failed to persist Re-ID embeddings to ChromaDB: {re_err}")
                 for jid in job_counts:
@@ -370,7 +378,8 @@ class ResultDispatcher:
             try:
                 inserted = self.vector.add_visual_embeddings(ids=vis_ids, embeddings=vis_embs, metadatas=vis_metas)
                 first = vis_embs[0]
-                self.vector.verify_vectors_written("visual", vis_ids, sample_size=10)
+                if VERIFY_VECTORS_ON_FLUSH:
+                    self.vector.verify_vectors_written("visual", vis_ids, sample_size=10)
                 
                 for jid, counts in job_counts.items():
                     self.record_job_metric(
@@ -396,7 +405,8 @@ class ResultDispatcher:
         if face_ids:
             try:
                 self.vector.add_face_embeddings(ids=face_ids, embeddings=face_embs, metadatas=face_metas)
-                self.vector.verify_vectors_written("face", face_ids, sample_size=5)
+                if VERIFY_VECTORS_ON_FLUSH:
+                    self.vector.verify_vectors_written("face", face_ids, sample_size=5)
             except Exception as fe_err:
                 LOGGER.error(f"Failed to persist Face embeddings to ChromaDB: {fe_err}")
                 raise
@@ -408,6 +418,9 @@ class ResultDispatcher:
 
     def flush_and_wait(self, timeout: float = 10.0) -> None:
         """Blocks until the database write queue is completely drained."""
+        target_scheduler = getattr(self, "gpu_scheduler", None)
+        if target_scheduler and hasattr(target_scheduler, "flush_enrichment_pool"):
+            target_scheduler.flush_enrichment_pool(timeout=timeout)
         start = time.time()
         while not self.db_write_queue.empty():
             if time.time() - start > timeout:

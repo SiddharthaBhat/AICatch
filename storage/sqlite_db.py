@@ -498,6 +498,15 @@ class SQLiteDatabase:
             cursor = conn.execute("SELECT * FROM cameras WHERE job_id = ?", (job_id,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_camera(self, camera_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single camera by ID."""
+        with self.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM cameras WHERE id = ?", (camera_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
     def get_track(self, track_uuid: str) -> Optional[Dict[str, Any]]:
         """Fetch a specific entity path."""
         with self.connection() as conn:

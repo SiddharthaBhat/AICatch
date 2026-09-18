@@ -34,13 +34,16 @@ export const Evidence: React.FC<EvidenceProps> = ({ jobId }) => {
   const [showVideoViewer, setShowVideoViewer] = useState(false);
 
   const loadFolders = async () => {
+    if (!jobId) {
+      setFolders([]);
+      setLoading(false);
+      return;
+    }
     try {
-      const data = await apiService.listFolders(jobId || undefined);
+      const data = await apiService.listFolders(jobId);
       setFolders(data);
-      if (jobId) {
-        const cams = await apiService.getJobCameras(jobId);
-        setCameras(cams);
-      }
+      const cams = await apiService.getJobCameras(jobId);
+      setCameras(cams);
     } catch (e) {
       console.error(e);
     } finally {

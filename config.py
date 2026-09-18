@@ -31,11 +31,12 @@ VEHICLE_CROPS_DIR = CROPS_DIR / "vehicle"
 FACE_CROPS_DIR = CROPS_DIR / "face"
 PLATE_CROPS_DIR = CROPS_DIR / "plate"
 KEYFRAMES_DIR = MEDIA_DIR / "keyframes"
+REGIONS_DIR = MEDIA_DIR / "regions"
 
 # Ensure all structural folders exist
 for folder in [
     TEMP_DIR, DATA_DIR, MEDIA_DIR, UPLOAD_DIR, CLIPS_DIR, THUMBNAILS_DIR,
-    CROPS_DIR, PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR
+    CROPS_DIR, PERSON_CROPS_DIR, VEHICLE_CROPS_DIR, FACE_CROPS_DIR, PLATE_CROPS_DIR, KEYFRAMES_DIR, REGIONS_DIR
 ]:
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -86,8 +87,11 @@ INDEX_SAMPLE_RATE_SEC = 2.5
 # 3. GPU Scheduler and Memory Settings (RTX 3050 4GB Optimization)
 # ==============================================================================
 MAX_VRAM_USAGE_MB = 3000  # Cap target active VRAM usage at 3.0 GB to avoid crash
-BATCH_SIZE = 8            # Dynamic GPU Worker batch size
+BATCH_SIZE = 16           # Dynamic GPU Worker batch size (optimized for RTX 3050 4GB)
 GPU_QUEUE_LIMIT = 64      # Bounded frame queue to prevent CPU RAM overflow
+
+# Verification during hot write path (False defers verification to job completion for speed)
+VERIFY_VECTORS_ON_FLUSH = False
 
 # Coexistence threshold for triggering empty cache
 VRAM_DANGER_THRESHOLD_MB = 3600

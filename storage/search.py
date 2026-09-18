@@ -162,18 +162,23 @@ class SearchLayer:
         cameras_in_scope = []
         if job_id:
             cameras_in_scope = self.sqlite.get_cameras_by_job(job_id)
+        allowed_camera_ids = {c["id"] for c in cameras_in_scope} if cameras_in_scope else None
         
         obj_filters = dict(search_filters)
         if entity_type is not None and "entity_type" not in obj_filters:
             obj_filters["entity_type"] = entity_type
 
+        is_identity_query = entity_type in ["person", "vehicle"]
+
         index_info = self.vector.describe_visual_index(obj_filters)
-        scene_info = self.vector.describe_scene_index(search_filters) if hasattr(self.vector, "describe_scene_index") else {"total": 0}
+        scene_info = self.vector.describe_scene_index(search_filters) if (hasattr(self.vector, "describe_scene_index") and not is_identity_query) else {"total": 0}
+        region_info = self.vector.describe_region_index(search_filters) if (hasattr(self.vector, "describe_region_index") and not is_identity_query) else {"total": 0}
         
         diagnostics: Dict[str, Any] = {
             "collection": index_info["collection"],
             "indexed_vectors": index_info["total"],
             "indexed_scene_vectors": scene_info.get("total", 0),
+            "indexed_region_vectors": region_info.get("total", 0),
             "indexed_by_object_type": index_info["by_object_type"],
             "indexed_by_camera": index_info["by_camera"],
             "embedding_model": index_info["embedding_model"],
@@ -184,37 +189,35 @@ class SearchLayer:
         }
         self.last_image_search_diagnostics = diagnostics
         
-        if not index_info["total"] and not scene_info.get("total", 0):
-            diagnostics["search_state"] = "NO_DATA"
-            raise VisualIndexEmptyError(diagnostics)
+        if is_identity_query:
+            if not index_info["total"]:
+                diagnostics["search_state"] = "NO_DATA"
+                raise VisualIndexEmptyError(diagnostics)
+        else:
+            if not index_info["total"] and not scene_info.get("total", 0) and not region_info.get("total", 0):
+                diagnostics["search_state"] = "NO_DATA"
+                raise VisualIndexEmptyError(diagnostics)
 
         # Stage 1: Candidate Retrieval (Object Crops - CLIP & Re-ID)
-        candidate_k = max(100, top_k * 4)
+        candidate_k = max(150, top_k * 6)
         vector_matches: List[Dict[str, Any]] = []
-        
-        # Stratified multi-camera candidate retrieval for investigations
-        if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
-            per_cam_k = max(25, candidate_k // len(cameras_in_scope))
-            seen_ids = set()
-            for cam in cameras_in_scope:
-                cam_f = dict(obj_filters)
-                cam_f["camera_id"] = cam["id"]
-                cam_res = self.vector.query_visual_embeddings(
-                    query_embedding=query_embedding,
-                    top_k=per_cam_k,
-                    filters=cam_f
-                )
-                for cr in cam_res:
-                    if cr["id"] not in seen_ids:
-                        seen_ids.add(cr["id"])
-                        vector_matches.append(cr)
-        else:
-            vector_matches = self.vector.query_visual_embeddings(
-                query_embedding=query_embedding,
-                top_k=candidate_k,
-                filters=obj_filters
-            )
-            
+        seen_ids = set()
+
+        # Global candidate retrieval across investigation scope
+        global_vis = self.vector.query_visual_embeddings(
+            query_embedding=query_embedding,
+            top_k=candidate_k,
+            filters=obj_filters
+        )
+        for cr in global_vis:
+            c_id = cr.get("metadata", {}).get("camera_id")
+            if allowed_camera_ids and c_id and c_id not in allowed_camera_ids:
+                continue
+            if cr["id"] not in seen_ids:
+                seen_ids.add(cr["id"])
+                vector_matches.append(cr)
+
+        vector_matches.sort(key=lambda x: float(x["similarity"]), reverse=True)
         diagnostics["raw_candidate_count"] = len(vector_matches)
         diagnostics["raw_top_scores"] = [round(float(match["similarity"]), 4) for match in vector_matches[:10]]
         
@@ -223,28 +226,64 @@ class SearchLayer:
         reid_ranks_by_track: Dict[str, int] = {}
         if enable_rrf and reid_embedding is not None:
             try:
+                seen_r_ids = set()
                 reid_matches: List[Dict[str, Any]] = []
-                if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
-                    per_cam_k = max(25, candidate_k // len(cameras_in_scope))
-                    seen_r_ids = set()
-                    for cam in cameras_in_scope:
-                        cam_f = dict(obj_filters)
-                        cam_f["camera_id"] = cam["id"]
-                        cam_res = self.vector.query_reid_embeddings(
-                            query_embedding=reid_embedding,
-                            top_k=per_cam_k,
-                            filters=cam_f
-                        )
-                        for cr in cam_res:
-                            if cr["id"] not in seen_r_ids:
-                                seen_r_ids.add(cr["id"])
-                                reid_matches.append(cr)
-                else:
-                    reid_matches = self.vector.query_reid_embeddings(
-                        query_embedding=reid_embedding,
-                        top_k=candidate_k,
-                        filters=obj_filters
-                    )
+
+                # Global Re-ID candidate retrieval across investigation scope
+                global_reid = self.vector.query_reid_embeddings(
+                    query_embedding=reid_embedding,
+                    top_k=candidate_k,
+                    filters=obj_filters
+                )
+                for cr in global_reid:
+                    c_id = cr.get("metadata", {}).get("camera_id")
+                    if allowed_camera_ids and c_id and c_id not in allowed_camera_ids:
+                        continue
+                    if cr["id"] not in seen_r_ids:
+                        seen_r_ids.add(cr["id"])
+                        reid_matches.append(cr)
+
+                # Candidate Completeness: ensure Re-ID evidence is present for visual candidate tracks
+                import numpy as np
+                q_reid_arr = np.array(reid_embedding, dtype=np.float32)
+                q_reid_norm = float(np.linalg.norm(q_reid_arr))
+                if q_reid_norm > 0:
+                    candidate_tracks = set()
+                    for m in vector_matches:
+                        t = m.get("metadata", {}).get("track_id")
+                        if t:
+                            candidate_tracks.add(t)
+
+                    for tid in candidate_tracks:
+                        try:
+                            t_reid = self.vector.reid_coll.get(where={"track_id": tid}, include=["embeddings", "metadatas"])
+                            if t_reid and t_reid.get("embeddings") is not None and len(t_reid["embeddings"]) > 0:
+                                best_sim = -1.0
+                                best_id = None
+                                best_meta = None
+                                for vid, vemb, vmeta in zip(t_reid["ids"], t_reid["embeddings"], t_reid["metadatas"]):
+                                    c_id = vmeta.get("camera_id")
+                                    if allowed_camera_ids and c_id and c_id not in allowed_camera_ids:
+                                        continue
+                                    arr = np.array(vemb, dtype=np.float32)
+                                    arr_norm = float(np.linalg.norm(arr))
+                                    if arr_norm > 0:
+                                        cos = float(np.dot(q_reid_arr, arr) / (q_reid_norm * arr_norm))
+                                        if cos > best_sim:
+                                            best_sim = cos
+                                            best_id = vid
+                                            best_meta = vmeta
+                                if best_id and best_id not in seen_r_ids:
+                                    seen_r_ids.add(best_id)
+                                    reid_matches.append({
+                                        "id": best_id,
+                                        "similarity": best_sim,
+                                        "metadata": best_meta
+                                    })
+                        except Exception as track_reid_err:
+                            LOGGER.debug(f"Candidate completeness lookup for {tid}: {track_reid_err}")
+
+                reid_matches.sort(key=lambda x: float(x["similarity"]), reverse=True)
                 for r_rank, r_match in enumerate(reid_matches, start=1):
                     r_meta = r_match.get("metadata", {})
                     t_id = r_meta.get("track_id")
@@ -275,10 +314,18 @@ class SearchLayer:
 
                 reid_sim = reid_scores_by_track.get(t_id)
                 match["rrf_score"] = rrf_score
+                match["visual_similarity"] = match.get("semantic_score", match.get("similarity"))
+                match["reid_similarity"] = round(reid_sim, 4) if reid_sim is not None else None
+                match["composite_score"] = match.get("similarity")
                 if "signal_breakdown" in match:
-                    match["signal_breakdown"]["reid"] = reid_sim
+                    match["signal_breakdown"]["reid"] = round(reid_sim, 4) if reid_sim is not None else None
                     match["signal_breakdown"]["rrf"] = rrf_score
             obj_results = sorted(obj_results, key=lambda x: x.get("rrf_score", x["similarity"]), reverse=True)
+        else:
+            for match in obj_results:
+                match["visual_similarity"] = match.get("semantic_score", match.get("similarity"))
+                match["reid_similarity"] = None
+                match["composite_score"] = match.get("similarity")
 
         for match in obj_results:
             match["match_type"] = "object"
@@ -286,7 +333,7 @@ class SearchLayer:
 
         # Stage 3: Candidate Retrieval for Scene Keyframes (Full Frames)
         scene_results: List[Dict[str, Any]] = []
-        if hasattr(self.vector, "scene_coll"):
+        if hasattr(self.vector, "scene_coll") and not is_identity_query:
             scene_filters = {}
             if job_id:
                 scene_filters["job_id"] = job_id
@@ -369,6 +416,9 @@ class SearchLayer:
                 scene_item = {
                     "similarity": round(s_sim, 4),
                     "semantic_score": round(s_sim, 4),
+                    "visual_similarity": round(s_sim, 4),
+                    "reid_similarity": None,
+                    "composite_score": round(s_sim, 4),
                     "attribute_score": 1.0,
                     "quality_score": 1.0,
                     "entity_type": "scene",
@@ -400,12 +450,151 @@ class SearchLayer:
                 }
                 scene_results.append(scene_item)
 
+        # Stage 3b: Candidate Retrieval for Spatial Regions / Tiles
+        region_results: List[Dict[str, Any]] = []
+        if hasattr(self.vector, "region_coll") and not is_identity_query:
+            region_filters = {}
+            if job_id:
+                region_filters["job_id"] = job_id
+            if cam_id:
+                region_filters["camera_id"] = cam_id
+
+            raw_region_matches: List[Dict[str, Any]] = []
+            if cameras_in_scope and not cam_id and len(cameras_in_scope) > 1:
+                per_cam_rk = max(30, candidate_k // len(cameras_in_scope))
+                seen_r_ids = set()
+                for cam in cameras_in_scope:
+                    cam_rf = dict(region_filters)
+                    cam_rf["camera_id"] = cam["id"]
+                    cam_rres = self.vector.query_region_embeddings(
+                        query_embedding=query_embedding,
+                        top_k=per_cam_rk,
+                        filters=cam_rf
+                    )
+                    for rr in cam_rres:
+                        if rr["id"] not in seen_r_ids:
+                            seen_r_ids.add(rr["id"])
+                            raw_region_matches.append(rr)
+            else:
+                raw_region_matches = self.vector.query_region_embeddings(
+                    query_embedding=query_embedding,
+                    top_k=candidate_k,
+                    filters=region_filters if region_filters else None
+                )
+
+            # Sort region matches by similarity desc
+            raw_region_matches.sort(key=lambda x: x["similarity"], reverse=True)
+
+            camera_map = {c["id"]: c for c in cameras_in_scope} if cameras_in_scope else {}
+            seen_region_windows: Dict[str, List[Tuple[float, int]]] = {}  # camera_id -> list of (timestamp, tile_idx)
+
+            for r_match in raw_region_matches:
+                r_sim = float(r_match["similarity"])
+                r_meta = r_match["metadata"]
+
+                # Parse bbox
+                bbox = [0.0, 0.0, 0.0, 0.0]
+                if "bbox_x1" in r_meta and "bbox_y1" in r_meta:
+                    bbox = [
+                        float(r_meta["bbox_x1"]),
+                        float(r_meta["bbox_y1"]),
+                        float(r_meta["bbox_x2"]),
+                        float(r_meta["bbox_y2"]),
+                    ]
+                elif "bbox" in r_meta and isinstance(r_meta["bbox"], str):
+                    try:
+                        bbox = [float(v) for v in r_meta["bbox"].split(",")]
+                    except Exception:
+                        bbox = [0.0, 0.0, 0.0, 0.0]
+
+                # Check match threshold
+                if strict_gate and r_sim < IMAGE_MATCH_THRESHOLD:
+                    low_cand = {
+                        "similarity": round(r_sim, 4),
+                        "semantic_score": round(r_sim, 4),
+                        "entity_type": "region",
+                        "match_type": "region",
+                        "job_id": r_meta.get("job_id"),
+                        "camera_id": r_meta.get("camera_id"),
+                        "timestamp": float(r_meta.get("timestamp", 0.0)),
+                        "crop_path": r_meta.get("crop_path"),
+                        "bbox": bbox,
+                        "is_low_confidence": True,
+                        "status": "BELOW_THRESHOLD",
+                        "diagnostic_label": "Below Relevance Threshold"
+                    }
+                    below_threshold.append(low_cand)
+                    continue
+
+                c_id = r_meta.get("camera_id", "")
+                t_stamp = float(r_meta.get("timestamp", 0.0))
+                tile_idx = int(r_meta.get("tile_idx", 0))
+
+                # Deduplicate temporal tiles within 2.0s on the same camera and same tile_idx
+                if c_id not in seen_region_windows:
+                    seen_region_windows[c_id] = []
+                if any(abs(t_stamp - past_t) < 2.0 and tile_idx == past_tile for past_t, past_tile in seen_region_windows[c_id]):
+                    continue
+                seen_region_windows[c_id].append((t_stamp, tile_idx))
+
+                # Camera metadata lookup
+                if c_id not in camera_map and r_meta.get("job_id"):
+                    job_cams = self.sqlite.get_cameras_by_job(r_meta["job_id"])
+                    for jc in job_cams:
+                        camera_map[jc["id"]] = jc
+
+                cam_info = camera_map.get(c_id, {})
+                video_source = cam_info.get("source_path") or r_meta.get("source_video", "")
+                camera_name = cam_info.get("name") or c_id
+
+                region_item = {
+                    "similarity": round(r_sim, 4),
+                    "semantic_score": round(r_sim, 4),
+                    "visual_similarity": round(r_sim, 4),
+                    "reid_similarity": None,
+                    "composite_score": round(r_sim, 4),
+                    "attribute_score": 1.0,
+                    "quality_score": 1.0,
+                    "entity_type": "region",
+                    "match_type": "region",
+                    "diagnostic_label": "Region tile match",
+                    "job_id": r_meta.get("job_id"),
+                    "camera_id": c_id,
+                    "camera_name": camera_name,
+                    "timestamp": t_stamp,
+                    "frame_idx": r_meta.get("frame_idx", 0),
+                    "track_id": None,
+                    "confidence": 0.95,
+                    "bbox": bbox,
+                    "crop_path": r_meta.get("crop_path"),
+                    "source_frame_path": r_meta.get("source_frame_path"),
+                    "video_source": video_source,
+                    "plate_text": None,
+                    "video_clip_path": None,
+                    "signal_breakdown": {
+                        "visual": round(r_sim, 4),
+                        "reid": None,
+                        "face": None,
+                        "color": 1.0,
+                        "quality": 1.0,
+                        "temporal": 0.0,
+                        "camera": "PASS",
+                        "ocr": None,
+                        "composite": round(r_sim, 4)
+                    }
+                }
+                region_results.append(region_item)
+
         # Stage 4: Candidate Fusion & Re-ranking
-        all_results = obj_results + scene_results
-        all_results.sort(key=lambda x: x["similarity"], reverse=True)
+        all_results = obj_results + region_results + scene_results
+        if enable_rrf and reid_ranks_by_track:
+            all_results.sort(key=lambda x: x.get("rrf_score", x["similarity"]), reverse=True)
+        else:
+            all_results.sort(key=lambda x: x["similarity"], reverse=True)
 
         diagnostics["post_gate_count"] = len(all_results)
         diagnostics["object_matches_count"] = len(obj_results)
+        diagnostics["region_matches_count"] = len(region_results)
         diagnostics["scene_matches_count"] = len(scene_results)
         diagnostics["below_threshold_count"] = len(below_threshold)
         diagnostics["gate_threshold"] = FINAL_SCORE_MIN_IMAGE if strict_gate else 0.0
@@ -418,8 +607,8 @@ class SearchLayer:
         else:
             diagnostics["search_state"] = "NO_CANDIDATES"
             
-        LOGGER.info("IMAGE_SEARCH_TRACE state=%s objects=%d scenes=%d %s",
-                    diagnostics["search_state"], len(obj_results), len(scene_results), diagnostics)
+        LOGGER.info("IMAGE_SEARCH_TRACE state=%s objects=%d regions=%d scenes=%d %s",
+                    diagnostics["search_state"], len(obj_results), len(region_results), len(scene_results), diagnostics)
 
         self.last_below_threshold_results = below_threshold[:top_k]
         return all_results[:top_k]
@@ -744,15 +933,25 @@ class SearchLayer:
                         break
                         
                 conf = target_det.get("color_confidence", 0.0) or 0.0
-                if has_color_match:
+                if conf < 0.05:
+                    # Grayscale / IR / Monochrome footage: chromatic color is absent.
+                    # Rely purely on the visual information actually present in the source frame.
+                    attribute_score = 1.0
+                    weight_semantic = 0.90
+                    weight_attr = 0.0
+                    weight_quality = 0.05
+                elif has_color_match:
                     attribute_score = 0.5 + 0.5 * conf  # 0.50–1.00: reward matching color
+                    weight_semantic = SEARCH_WEIGHT_SEMANTIC
+                    weight_attr = SEARCH_WEIGHT_ATTRIBUTE
+                    weight_quality = SEARCH_WEIGHT_QUALITY
                 else:
-                    # Confident color mismatch → heavy penalty (near-zero)
+                    # Confident color mismatch on color footage → heavy penalty (near-zero)
                     # Low confidence → mild penalty (uncertain, don't punish too hard)
                     attribute_score = max(0.0, 0.20 * (1.0 - conf))  # 0.00–0.20
-                weight_semantic = SEARCH_WEIGHT_SEMANTIC
-                weight_attr = SEARCH_WEIGHT_ATTRIBUTE
-                weight_quality = SEARCH_WEIGHT_QUALITY
+                    weight_semantic = SEARCH_WEIGHT_SEMANTIC
+                    weight_attr = SEARCH_WEIGHT_ATTRIBUTE
+                    weight_quality = SEARCH_WEIGHT_QUALITY
             else:
                 attribute_score = 1.0 # Neutral if no colors queried
                 weight_semantic = 0.90

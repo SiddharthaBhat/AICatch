@@ -22,6 +22,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [startingCams, setStartingCams] = useState<Record<string, boolean>>({});
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const fetchJobDetails = async () => {
@@ -49,6 +50,32 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
     const interval = setInterval(fetchJobDetails, 2500);
     return () => clearInterval(interval);
   }, [jobId, job?.status]);
+
+  const handleStartAll = async () => {
+    setActionLoading(true);
+    try {
+      await apiService.startAllCameras(jobId);
+      setStatusMsg({ type: "success", text: "Started indexing all eligible cameras." });
+      await fetchJobDetails();
+    } catch (err: any) {
+      setStatusMsg({ type: "error", text: err.message || "Failed to start remaining cameras." });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStartCamera = async (cameraId: string) => {
+    setStartingCams(prev => ({ ...prev, [cameraId]: true }));
+    try {
+      await apiService.startCamera(jobId, cameraId);
+      setStatusMsg({ type: "success", text: "Camera indexing initiated." });
+      await fetchJobDetails();
+    } catch (err: any) {
+      setStatusMsg({ type: "error", text: err.message || "Failed to start camera." });
+    } finally {
+      setStartingCams(prev => ({ ...prev, [cameraId]: false }));
+    }
+  };
 
   const handlePause = async () => {
     setActionLoading(true);
@@ -122,6 +149,10 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
   const isPaused = job.status === "paused";
   const isIndexing = job.status === "indexing" || job.status === "starting";
 
+  const hasReadyCameras = cameras.some(c => (c.status as string) === "ready" || (c.status as string) === "inactive");
+  const anyIndexingOrComplete = cameras.some(c => (c.status as string) === "indexing" || (c.status as string) === "completed");
+  const startAllLabel = anyIndexingOrComplete ? "Start Remaining" : "Start Indexing All";
+
   return (
     <div style={{ maxWidth: "1100px", margin: "0 auto", paddingBottom: "60px" }} className="animate-fade-in">
       {/* Top Breadcrumb & Title */}
@@ -160,6 +191,18 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
 
         {/* Global Action Buttons */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {hasReadyCameras && !isComplete && (
+            <button 
+              type="button" 
+              className="btn btn-primary"
+              onClick={handleStartAll}
+              disabled={actionLoading}
+              style={{ fontSize: "12px", padding: "8px 14px", display: "flex", alignItems: "center", gap: "6px", fontWeight: "600" }}
+            >
+              {actionLoading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {startAllLabel}
+            </button>
+          )}
+
           {isIndexing && (
             <button 
               type="button" 
@@ -279,9 +322,33 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
             const camTracks = tracks.filter(t => t.camera_id === cam.id);
             
             // Derive camera-specific state
-            let camProgress = overallProgress;
-            let camStatusText = isComplete ? "Complete" : isIndexing ? "Indexing" : job.status;
-            let camStatusColor = isComplete ? "var(--color-success)" : "var(--color-accent)";
+            const rawCamStatus = (cam.status as string) || "ready";
+            const isCamComplete = rawCamStatus === "completed";
+            const isCamIndexing = rawCamStatus === "indexing" || rawCamStatus === "active";
+            const isCamReady = rawCamStatus === "ready" || rawCamStatus === "inactive";
+            const isCamFailed = rawCamStatus === "failed";
+
+            let camProgressVal = typeof cam.progress === "number" ? cam.progress : 0;
+            if (camProgressVal > 0 && camProgressVal <= 1.0) {
+              camProgressVal = camProgressVal * 100;
+            }
+            const camProgress = isCamComplete ? 100 : Math.min(99, Math.round(camProgressVal));
+
+            let camStatusText = isCamComplete ? "Complete" : isCamIndexing ? "Indexing" : isCamFailed ? "Failed" : "Ready";
+            let camStatusColor = isCamComplete 
+              ? "var(--color-success)" 
+              : isCamIndexing 
+              ? "var(--color-accent)" 
+              : isCamFailed 
+              ? "var(--color-danger)" 
+              : "var(--text-muted)";
+            let camStatusBg = isCamComplete 
+              ? "rgba(16, 185, 129, 0.1)" 
+              : isCamIndexing 
+              ? "rgba(6, 182, 212, 0.1)" 
+              : isCamFailed 
+              ? "rgba(244, 63, 94, 0.1)" 
+              : "rgba(148, 163, 184, 0.1)";
 
             return (
               <div 
@@ -308,7 +375,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
                         fontWeight: "700", 
                         padding: "2px 6px", 
                         borderRadius: "4px",
-                        backgroundColor: isComplete ? "rgba(16, 185, 129, 0.1)" : "rgba(6, 182, 212, 0.1)",
+                        backgroundColor: camStatusBg,
                         color: camStatusColor,
                         textTransform: "uppercase"
                       }}
@@ -331,11 +398,27 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
                       style={{ 
                         width: `${camProgress}%`, 
                         height: "100%", 
-                        backgroundColor: isComplete ? "var(--color-success)" : "var(--color-accent)",
+                        backgroundColor: isCamComplete ? "var(--color-success)" : "var(--color-accent)",
                         transition: "width 0.4s ease"
                       }} 
                     />
                   </div>
+
+                  {/* Per-camera start control for unstarted cameras */}
+                  {isCamReady && !isComplete && (
+                    <div style={{ marginTop: "4px", marginBottom: "12px" }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => handleStartCamera(cam.id)}
+                        disabled={actionLoading || startingCams[cam.id]}
+                        style={{ fontSize: "11px", padding: "6px 12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                      >
+                        {startingCams[cam.id] ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                        Start Indexing
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer Metrics */}

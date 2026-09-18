@@ -29,9 +29,28 @@ type AppView =
   | "evidence"
   | "system";
 
+const parseUrlHash = (): { view: AppView; jobId: string | null } => {
+  try {
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    if (!hash) return { view: "dashboard", jobId: null };
+    const [viewPart, queryPart] = hash.split("?");
+    const params = new URLSearchParams(queryPart || "");
+    const validViews: AppView[] = [
+      "dashboard", "investigations", "create_single", "create_multi", 
+      "indexing", "workspace", "global_search", "evidence", "system"
+    ];
+    const view = validViews.includes(viewPart as AppView) ? (viewPart as AppView) : "dashboard";
+    const jobId = params.get("jobId");
+    return { view, jobId };
+  } catch {
+    return { view: "dashboard", jobId: null };
+  }
+};
+
 export const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<AppView>("dashboard");
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const initial = parseUrlHash();
+  const [currentView, setCurrentView] = useState<AppView>(initial.view);
+  const [activeJobId, setActiveJobId] = useState<string | null>(initial.jobId);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   
   // Jobs registry state
@@ -40,6 +59,29 @@ export const App: React.FC = () => {
   
   // GPU / System telemetry state for compact bottom indicator
   const [isGpuIndexing, setIsGpuIndexing] = useState(false);
+
+  const navigateTo = (view: AppView, jobId: string | null = null) => {
+    setCurrentView(view);
+    setActiveJobId(jobId);
+    const hash = jobId ? `#${view}?jobId=${encodeURIComponent(jobId)}` : `#${view}`;
+    if (window.location.hash !== hash) {
+      window.history.pushState(null, "", hash);
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const state = parseUrlHash();
+      setCurrentView(state.view);
+      setActiveJobId(state.jobId);
+    };
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("hashchange", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("hashchange", handlePopState);
+    };
+  }, []);
 
   const fetchJobs = async () => {
     try {
@@ -63,17 +105,15 @@ export const App: React.FC = () => {
 
   const handleOpenInvestigation = (jobId: string) => {
     const job = jobs.find(j => j.id === jobId);
-    setActiveJobId(jobId);
     if (job && (job.status === "indexing" || job.status === "starting")) {
-      setCurrentView("indexing");
+      navigateTo("indexing", jobId);
     } else {
-      setCurrentView("workspace");
+      navigateTo("workspace", jobId);
     }
   };
 
   const handleJobCreated = (jobId: string) => {
-    setActiveJobId(jobId);
-    setCurrentView("indexing");
+    navigateTo("indexing", jobId);
     fetchJobs();
   };
 
@@ -92,10 +132,9 @@ export const App: React.FC = () => {
         type="button"
         onClick={() => {
           if (viewKey === "investigations") {
-            setActiveJobId(null);
-            setCurrentView("investigations");
+            navigateTo("investigations", null);
           } else {
-            setCurrentView(viewKey);
+            navigateTo(viewKey, activeJobId);
           }
         }}
         className={`nav-link ${isActive ? "active" : ""}`}
@@ -266,7 +305,7 @@ export const App: React.FC = () => {
               <button 
                 type="button" 
                 className="btn btn-primary"
-                onClick={() => setCurrentView("create_single")}
+                onClick={() => navigateTo("create_single", null)}
                 style={{ fontSize: "12px", padding: "6px 12px", display: "flex", alignItems: "center", gap: "4px" }}
               >
                 <Plus size={14} /> New Inquest
@@ -280,8 +319,8 @@ export const App: React.FC = () => {
           {currentView === "dashboard" && (
             <Dashboard 
               jobs={jobs}
-              onStartSingleVideo={() => setCurrentView("create_single")}
-              onStartMultiCamera={() => setCurrentView("create_multi")}
+              onStartSingleVideo={() => navigateTo("create_single", null)}
+              onStartMultiCamera={() => navigateTo("create_multi", null)}
               onOpenInvestigation={handleOpenInvestigation}
               onRefreshJobs={fetchJobs}
             />
@@ -290,8 +329,8 @@ export const App: React.FC = () => {
           {currentView === "investigations" && (
             <InvestigationsList 
               jobs={jobs}
-              onStartSingleVideo={() => setCurrentView("create_single")}
-              onStartMultiCamera={() => setCurrentView("create_multi")}
+              onStartSingleVideo={() => navigateTo("create_single", null)}
+              onStartMultiCamera={() => navigateTo("create_multi", null)}
               onOpenInvestigation={handleOpenInvestigation}
               onRefresh={fetchJobs}
             />
@@ -299,14 +338,14 @@ export const App: React.FC = () => {
 
           {currentView === "create_single" && (
             <CreateSingleVideo 
-              onBack={() => setCurrentView("investigations")}
+              onBack={() => navigateTo("investigations", null)}
               onJobCreated={handleJobCreated}
             />
           )}
 
           {currentView === "create_multi" && (
             <CreateMultiCamera 
-              onBack={() => setCurrentView("investigations")}
+              onBack={() => navigateTo("investigations", null)}
               onJobCreated={handleJobCreated}
             />
           )}
@@ -314,10 +353,9 @@ export const App: React.FC = () => {
           {currentView === "indexing" && activeJobId && (
             <LiveProcessing 
               jobId={activeJobId}
-              onBack={() => setCurrentView("investigations")}
+              onBack={() => navigateTo("investigations", null)}
               onOpenWorkspace={(jId) => {
-                setActiveJobId(jId);
-                setCurrentView("workspace");
+                navigateTo("workspace", jId);
               }}
             />
           )}
@@ -330,8 +368,7 @@ export const App: React.FC = () => {
                   <SingleVideoWorkspace 
                     jobId={activeJobId}
                     onBack={() => {
-                      setActiveJobId(null);
-                      setCurrentView("investigations");
+                      navigateTo("investigations", null);
                     }}
                   />
                 );
@@ -340,8 +377,7 @@ export const App: React.FC = () => {
                 <InvestigationWorkspace 
                   jobId={activeJobId}
                   onBack={() => {
-                    setActiveJobId(null);
-                    setCurrentView("investigations");
+                    navigateTo("investigations", null);
                   }}
                 />
               );
@@ -363,7 +399,7 @@ export const App: React.FC = () => {
               <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "20px" }}>
                 Case folders, saved person profiles, and video evidence clips.
               </p>
-              <Evidence jobId={activeJobId || undefined} />
+              <Evidence jobId={activeJobId || (jobs.length > 0 ? jobs[0].id : undefined)} />
             </div>
           )}
 

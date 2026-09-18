@@ -108,6 +108,9 @@ async def shutdown_event():
     for job_id in list(job_manager.active_jobs.keys()):
         job_manager.cleanup_job_resources(job_id)
         
+    LOGGER.info("Flushing pending media storage writes...")
+    media_storage.stop()
+
     PerformanceMonitorInstance.stop()
     LOGGER.info("AICatch Server offline.")
 
@@ -153,6 +156,24 @@ def start_job(job_id: str, background_tasks: BackgroundTasks):
         # Start job asynchronously in threadpool to avoid API timeout
         background_tasks.add_task(job_manager.start_job, job_id)
         return {"status": "starting", "job_id": job_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/{job_id}/start-all")
+def start_all_cameras(job_id: str, background_tasks: BackgroundTasks):
+    try:
+        background_tasks.add_task(job_manager.start_all_ready_cameras, job_id)
+        return {"status": "starting", "job_id": job_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/{job_id}/cameras/{camera_id}/start")
+def start_camera(job_id: str, camera_id: str, background_tasks: BackgroundTasks):
+    try:
+        background_tasks.add_task(job_manager.start_camera, job_id, camera_id)
+        return {"status": "starting", "job_id": job_id, "camera_id": camera_id}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -469,6 +490,23 @@ async def upload_video_file(file: UploadFile = File(...)):
         LOGGER.error(f"Failed to save video upload: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save video upload: {e}")
 
+@app.get("/api/videos")
+def list_available_videos():
+    """Returns list of existing video files available in media/uploads."""
+    videos = []
+    seen = set()
+    for directory in [UPLOAD_DIR, MEDIA_DIR]:
+        if directory.exists():
+            for f in sorted(directory.glob("*.*")):
+                if f.is_file() and f.suffix.lower() in [".mp4", ".avi", ".mov", ".mkv", ".webm"] and f.name not in seen:
+                    seen.add(f.name)
+                    videos.append({
+                        "filename": f.name,
+                        "path": str(f).replace("\\", "/"),
+                        "size_bytes": f.stat().st_size
+                    })
+    return {"videos": sorted(videos, key=lambda x: x["filename"])}
+
 @app.api_route("/api/video/stream", methods=["GET", "HEAD"])
 async def stream_video(request: Request, path: str = Query(...)):
     """Streams video from local storage with HTTP Range support for HTML5 video playback and timeline seeking."""
@@ -561,6 +599,9 @@ def get_job_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
     progress_info = job_manager.get_job_progress(job_id)
     details = {**job_record, **progress_info}
+    if str(details.get("status", "")).lower() in ["completed", "indexed"]:
+        details["progress"] = 1.0
+        details["status"] = "completed"
     return details
 
 @app.get("/api/jobs/{job_id}/diagnostics")
@@ -608,7 +649,32 @@ def get_job_diagnostics(job_id: str):
 
 @app.get("/api/jobs/{job_id}/cameras")
 def get_job_cameras(job_id: str):
-    return sqlite_db.get_cameras_by_job(job_id)
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    job = job_manager.active_jobs.get(job_id)
+    for cam in cameras:
+        cid = cam["id"]
+        if job and cid in job.decoders:
+            dec = job.decoders[cid]
+            if dec.is_alive():
+                cam["status"] = "indexing"
+            elif getattr(dec, "has_finished", False):
+                cam["status"] = "completed"
+            elif getattr(dec, "failed", False):
+                cam["status"] = "failed"
+            fps = dec.target_fps or 25.0
+            qsize = dec.frame_queue.qsize()
+            processed = max(0, dec.frames_decoded - qsize) / fps
+            dur = dec.duration_sec or 1.0
+            cam["processed_sec"] = round(processed, 2)
+            cam["duration_sec"] = round(dec.duration_sec, 2)
+            cam["progress"] = 1.0 if cam["status"] == "completed" else min(0.99, processed / dur if dur > 0 else 0.0)
+        elif str(cam.get("status", "")).lower() == "completed":
+            cam["status"] = "completed"
+            cam["progress"] = 1.0
+        else:
+            cam["status"] = "ready"
+            cam["progress"] = 0.0
+    return cameras
 
 @app.get("/api/jobs/{job_id}/tracks")
 def get_job_tracks(job_id: str):
@@ -800,7 +866,7 @@ async def execute_search(
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         LOGGER.error(f"Search query failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"SYSTEM_ERROR: Vector search engine failure: {e}")
 
 # ==============================================================================
 # 7. REST Route Handlers: Saved Persons Profile Manager
@@ -1520,27 +1586,31 @@ def get_track_summary(track_uuid: str):
         label_str = f"User Label: {track['label']}" if track.get("label") else "No User Label"
         
         # 4. Get journey details
-        journey = []
+        events = []
         try:
-            journey = journey_engine.reconstruct_journey(track_uuid, similarity_threshold=0.5)
+            journey_result = journey_engine.reconstruct_journey(track_uuid, similarity_threshold=0.5)
+            if isinstance(journey_result, dict):
+                events = journey_result.get("confirmed_journey", [])
+            elif isinstance(journey_result, list):
+                events = journey_result
         except Exception as je:
             LOGGER.warning(f"Journey reconstruction failed for track {track_uuid}: {je}")
             
         # 5. Build chronological narrative
         sentences = []
-        if not journey:
+        if not events:
             # Fallback to single camera occurrence
             dur = track["end_time"] - track["start_time"]
             sentences.append(f"Subject was observed on the '{camera_name}' camera starting at time index {track['start_time']:.1f}s for a duration of {dur:.1f}s.")
         else:
-            first_event = journey[0]
-            first_cam = camera_map.get(first_event["camera_id"], first_event["camera_id"])
-            sentences.append(f"The subject was first detected on the '{first_cam}' camera at time index {first_event['timestamp']:.1f}s.")
+            first_event = events[0]
+            first_cam = camera_map.get(first_event.get("camera_id"), first_event.get("camera_id"))
+            sentences.append(f"The subject was first detected on the '{first_cam}' camera at time index {first_event.get('timestamp', 0.0):.1f}s.")
             
-            for i in range(1, len(journey)):
-                evt = journey[i]
-                cam = camera_map.get(evt["camera_id"], evt["camera_id"])
-                sim = evt["confidence"]
+            for i in range(1, len(events)):
+                evt = events[i]
+                cam = camera_map.get(evt.get("camera_id"), evt.get("camera_id"))
+                sim = evt.get("confidence", evt.get("similarity", 0.85))
                 transit = evt.get("transit_time_sec", 0.0)
                 
                 # Check certainty
@@ -1551,12 +1621,22 @@ def get_track_summary(track_uuid: str):
                 else:
                     match_desc = f"with a weak similarity correlation (similarity: {sim:.2f})"
                     
-                sentences.append(f"Subsequently, the subject was observed on the '{cam}' camera at time index {evt['timestamp']:.1f}s {match_desc}, representing a transit time of {transit:.1f}s from the prior camera field.")
+                sentences.append(f"Subsequently, the subject was observed on the '{cam}' camera at time index {evt.get('timestamp', 0.0):.1f}s {match_desc}, representing a transit time of {transit:.1f}s from the prior camera field.")
                 
         # 6. Retrieve track notes
         notes = sqlite_db.get_notes("track", track_uuid)
         notes_str = "\n".join([f"- [Note] {n['content']} (Saved on {time.strftime('%Y-%m-%d %H:%M', time.localtime(n['created_at']))})" for n in notes]) if notes else "No notes added."
         
+        # 7. Check source footage characteristics (infrared/night monochrome vs color)
+        detections = sqlite_db.get_detections_by_track(track_uuid)
+        is_ir_mono = False
+        if detections:
+            conf_values = [d.get("color_confidence", 0.0) for d in detections if d.get("color_confidence") is not None]
+            if conf_values and max(conf_values) < 0.05:
+                is_ir_mono = True
+
+        footage_characteristic = "**Footage Characteristic:** Infrared / Night-Vision Monochromatic (Color-based interpretation unavailable)\n" if is_ir_mono else ""
+
         # Compile report
         markdown = f"""### FORENSIC ANALYSIS SUMMARY: TRACK #{track['track_id']}
 
@@ -1564,7 +1644,7 @@ def get_track_summary(track_uuid: str):
 **Initial Detection Location:** {camera_name}
 **Time Interval:** {track['start_time']:.1f}s to {track['end_time']:.1f}s
 **Identity Label:** {track.get('label') or 'Unidentified Subject'}
-
+{footage_characteristic}
 #### Chronological Trajectory Analysis
 {chr(10).join(sentences)}
 
@@ -1616,13 +1696,21 @@ def get_job_summary(job_id: str):
         else:
             interest_str = "No specific targets of interest labeled or license plates recognized."
 
-        # Notes list (all notes saved under tracks of this job)
+        # Notes list (all notes saved under tracks of this job - single indexed query)
         all_notes = []
-        for t in tracks:
-            track_notes = sqlite_db.get_notes("track", t["id"])
-            for tn in track_notes:
-                all_notes.append((t["track_id"], tn["content"], tn["created_at"]))
-        all_notes.sort(key=lambda x: x[2], reverse=True)
+        try:
+            with sqlite_db.connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT n.content, n.created_at, t.track_id
+                    FROM notes n
+                    JOIN tracks t ON n.parent_id = t.id
+                    WHERE n.parent_type = 'track' AND t.job_id = ?
+                    ORDER BY n.created_at DESC
+                """, (job_id,))
+                all_notes = [(row["track_id"], row["content"], row["created_at"]) for row in cursor.fetchall()]
+        except Exception as ne:
+            LOGGER.warning("Could not load case notes for summary: %s", ne)
         
         notes_str = ""
         if all_notes:

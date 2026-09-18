@@ -51,6 +51,7 @@ class TrackData:
         self.dominant_lower_color: Optional[str] = None
         self.secondary_lower_color: Optional[str] = None
         self.color_confidence = 0.0
+        self.is_monochrome = False
 
     def add_frame(
         self,

@@ -380,11 +380,27 @@ class SQLiteDatabase:
 
     def add_camera(self, camera_id: str, job_id: str, name: str, source_type: str, source_path: str, checksum: Optional[str] = None) -> None:
         """Register a camera source associated with a job."""
+        initial_status = "inactive" if source_path else "not_configured"
         with self.connection() as conn:
             conn.execute(
                 "INSERT INTO cameras (id, job_id, name, source_type, source_path, status, checksum) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (camera_id, job_id, name, source_type, source_path, "inactive", checksum)
+                (camera_id, job_id, name, source_type, source_path, initial_status, checksum)
             )
+
+    def update_camera_source(self, camera_id: str, source_path: str, name: Optional[str] = None, checksum: Optional[str] = None) -> None:
+        """Update camera source path, name, and checksum."""
+        status = "inactive" if source_path else "not_configured"
+        with self.connection() as conn:
+            if name:
+                conn.execute(
+                    "UPDATE cameras SET source_path = ?, name = ?, checksum = ?, status = ? WHERE id = ?",
+                    (source_path, name, checksum, status, camera_id)
+                )
+            else:
+                conn.execute(
+                    "UPDATE cameras SET source_path = ?, checksum = ?, status = ? WHERE id = ?",
+                    (source_path, checksum, status, camera_id)
+                )
 
     def update_camera_metadata(self, camera_id: str, status: str, resolution: str, fps: float) -> None:
         """Update camera parameters after opening source."""

@@ -96,6 +96,10 @@ VERIFY_VECTORS_ON_FLUSH = False
 # Coexistence threshold for triggering empty cache
 VRAM_DANGER_THRESHOLD_MB = 3600
 
+# YOLO Inference Precision Mode (RTX 3050 Tensor Core Optimization)
+# Set to True to execute YOLO11s under CUDA AMP FP16 autocast; False for standard FP32.
+YOLO_USE_AMP = True
+
 # ==============================================================================
 # 4. Processing Profiles
 # ==============================================================================

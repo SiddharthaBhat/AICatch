@@ -36,6 +36,8 @@ class VideoStreamDecoder(threading.Thread):
         pre_event_buffer_sec: float = 2.0,
         post_event_buffer_sec: float = 4.0,
         skip_static_threshold: Optional[float] = None,
+        job_id: str = "",
+        profile: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(name=f"Decoder-{camera_id}", daemon=True)
         self.camera_id = camera_id
@@ -50,6 +52,8 @@ class VideoStreamDecoder(threading.Thread):
         self.post_event_buffer_sec = post_event_buffer_sec
         self.skip_static_threshold = skip_static_threshold
         self.static_filtered = (skip_static_threshold is not None and skip_static_threshold > 0)
+        self.job_id = job_id
+        self.profile = profile
         self.background_ref: Optional[np.ndarray] = None
         self.frames_skipped_static: int = 0
         
@@ -226,8 +230,8 @@ class VideoStreamDecoder(threading.Thread):
                 self.frames_decoded += 1
                 timestamp = frame_idx / self.target_fps
                 
-                # Convert raw bytes to numpy image
-                frame_bgr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
+                # Convert raw bytes to writable 3-channel numpy image (YOLO-ready)
+                frame_bgr = np.frombuffer(bytearray(raw_bytes), dtype=np.uint8).reshape(
                     (self.target_height, self.target_width, 3)
                 )
 

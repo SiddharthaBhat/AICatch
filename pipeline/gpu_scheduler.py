@@ -8,6 +8,7 @@ import threading
 import queue
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 import cv2
@@ -27,7 +28,7 @@ from torchvision import transforms
 from config import (
     DEVICE, YOLO_DEVICE, CLIP_DEVICE, REID_DEVICE, FACE_DEVICE, OCR_DEVICE, REID_MODEL_NAME, REID_VERSION, EMBEDDING_MODEL_NAME, EMBEDDING_VERSION,
     YOLO_MODEL_PATH, CLIP_MODEL_NAME, BATCH_SIZE, GPU_QUEUE_LIMIT,
-    PROCESSING_PROFILES, MAX_VRAM_USAGE_MB
+    PROCESSING_PROFILES, MAX_VRAM_USAGE_MB, YOLO_USE_AMP
 )
 from storage.cache import TrackCache, TrackData
 from storage.media_storage import MediaStorage
@@ -57,6 +58,12 @@ def calculate_iou(boxA: List[float], boxB: List[float]) -> float:
     
     unionArea = float(boxAArea + boxBArea - interArea)
     return interArea / unionArea if unionArea > 0 else 0.0
+
+def _reid_prep_worker(images: List[Image.Image], reid_transform: transforms.Compose) -> torch.Tensor:
+    """Pure CPU worker function for Re-ID tensor transformation.
+    Operates strictly on independent PIL images; does not touch GPU or shared mutable state.
+    """
+    return torch.stack([reid_transform(img if img.mode == "RGB" else img.convert("RGB")) for img in images])
 
 def preprocess_face_image(image: Image.Image) -> Image.Image:
     """Standardizes input PIL image to 8-bit RGB (3 channels).
@@ -96,6 +103,9 @@ class GPUScheduler(threading.Thread):
         
         # Thread lock for model execution (re-entrant)
         self.gpu_lock = threading.RLock()
+
+        # Dedicated single-worker pool for intra-batch Re-ID CPU tensor preparation overlap
+        self._reid_prep_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ReIDPrepWorker")
 
         # CPU Enrichment Worker Pool for color analysis, face, OCR, and media saving
         self.enrichment_queue: queue.Queue = queue.Queue(maxsize=256)
@@ -231,7 +241,7 @@ class GPUScheduler(threading.Thread):
                         # Check if any registered camera in SQLite is still pending (not yet started)
                         try:
                             cams = self.job_manager.sqlite.get_cameras_by_job(job_id)
-                            has_pending_cams = any(c.get("status") in ["inactive", "queued"] for c in cams)
+                            has_pending_cams = any(c.get("status") in ["inactive", "queued", "ready", "not_configured"] for c in cams)
                         except Exception:
                             has_pending_cams = False
 
@@ -333,13 +343,25 @@ class GPUScheduler(threading.Thread):
         
         start_yolo = time.time()
         with self.gpu_lock:
-            results = self.yolo.predict(
-                source=frames,
-                imgsz=640,
-                device=YOLO_DEVICE,
-                verbose=False,
-                conf=0.25
-            )
+            if YOLO_USE_AMP and YOLO_DEVICE == "cuda":
+                # CUDA Automatic Mixed Precision (AMP) FP16 for Tensor Core acceleration on RTX 3050
+                with torch.amp.autocast("cuda", dtype=torch.float16):
+                    results = self.yolo.predict(
+                        source=frames,
+                        imgsz=640,
+                        device=YOLO_DEVICE,
+                        verbose=False,
+                        conf=0.25
+                    )
+            else:
+                # Standard FP32 baseline execution
+                results = self.yolo.predict(
+                    source=frames,
+                    imgsz=640,
+                    device=YOLO_DEVICE,
+                    verbose=False,
+                    conf=0.25
+                )
         elapsed_yolo = time.time() - start_yolo
         LOGGER.info(f"GPU_TRACE: YOLO inference finished on {len(frames)} frames in {elapsed_yolo:.3f}s")
         PerformanceMonitorInstance.record_latency("yolo", elapsed_yolo)
@@ -434,21 +456,33 @@ class GPUScheduler(threading.Thread):
                     "track": track
                 })
 
-        # Run batched CLIP inference
+        # Run batched CLIP & Re-ID inference with intra-batch CPU overlap
         if clip_batch_items:
             start_clip_batch = time.time()
-            clip_images = [item["pil_img"] for item in clip_batch_items]
-            clip_embeddings = self.embed_images_batch(clip_images, batch_size=16)
 
-            # Person Re-ID batch
+            # Identify Re-ID items upfront
             reid_batch_items = [
                 item for item in clip_batch_items
                 if item["entity_type"] == "person" and self.reid_model is not None and self.reid_transform is not None
             ]
-            reid_embeddings = []
+
+            # 1. Asynchronously dispatch Re-ID CPU tensor preparation to single worker thread
+            future_reid_tensors = None
             if reid_batch_items:
                 reid_images = [item["pil_img"] for item in reid_batch_items]
-                reid_embeddings = self.embed_reid_batch(reid_images, batch_size=16)
+                future_reid_tensors = self._reid_prep_executor.submit(
+                    _reid_prep_worker, reid_images, self.reid_transform
+                )
+
+            # 2. Concurrently execute batched CLIP on scheduler thread
+            clip_images = [item["pil_img"] for item in clip_batch_items]
+            clip_embeddings = self.embed_images_batch(clip_images, batch_size=16)
+
+            # 3. Complete Re-ID GPU inference (tensors already prepared concurrently during CLIP)
+            reid_embeddings = []
+            if future_reid_tensors is not None:
+                reid_tensors = future_reid_tensors.result()
+                reid_embeddings = self._embed_reid_prepared_tensors(reid_tensors, batch_size=16)
 
             # Assign CLIP embeddings & metadata
             for idx_c, item in enumerate(clip_batch_items):
@@ -903,6 +937,11 @@ class GPUScheduler(threading.Thread):
     def stop_scheduler(self) -> None:
         """Gracefully halts scheduler thread and cleans VRAM."""
         self.stopped = True
+        if hasattr(self, "_reid_prep_executor"):
+            try:
+                self._reid_prep_executor.shutdown(wait=True)
+            except Exception:
+                pass
         for _ in range(self.num_enrichment_workers):
             try:
                 self.enrichment_queue.put_nowait(None)
@@ -1021,6 +1060,41 @@ class GPUScheduler(threading.Thread):
                         with self.gpu_lock:
                             with torch.no_grad():
                                 rf = reid_model(t)
+                                rf = rf / rf.norm(p=2, dim=-1, keepdim=True)
+                                all_results.append(rf[0].cpu().float().numpy().tolist())
+                    except Exception:
+                        all_results.append(None)
+        return all_results
+
+    def _embed_reid_prepared_tensors(self, tensor_crops: torch.Tensor, batch_size: int = 16) -> List[Optional[List[float]]]:
+        """Extracts and normalizes person Re-ID embeddings from pre-transformed CPU tensors under the GPU lock."""
+        if tensor_crops is None or len(tensor_crops) == 0:
+            return []
+        with self.gpu_lock:
+            if self.reid_model is None:
+                self.load_models()
+            if self.reid_model is None:
+                return [None] * len(tensor_crops)
+            reid_model = self.reid_model
+
+        all_results: List[Optional[List[float]]] = []
+        for i in range(0, len(tensor_crops), batch_size):
+            chunk = tensor_crops[i : i + batch_size].to(REID_DEVICE)
+            if REID_DEVICE == "cuda":
+                chunk = chunk.half()
+            try:
+                with self.gpu_lock:
+                    with torch.no_grad():
+                        reid_features = reid_model(chunk)
+                        reid_features = reid_features / reid_features.norm(p=2, dim=-1, keepdim=True)
+                        all_results.extend(reid_features.cpu().float().numpy().tolist())
+            except Exception as ex:
+                LOGGER.warning(f"Batch Re-ID inference error: {ex}")
+                for t in chunk:
+                    try:
+                        with self.gpu_lock:
+                            with torch.no_grad():
+                                rf = reid_model(t.unsqueeze(0))
                                 rf = rf / rf.norm(p=2, dim=-1, keepdim=True)
                                 all_results.append(rf[0].cpu().float().numpy().tolist())
                     except Exception:

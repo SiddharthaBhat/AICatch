@@ -148,6 +148,12 @@ class JobManager:
                         LOGGER.info(f"Skipping camera {cam['name']} ({cid}) - status is '{cam_status}'.")
                         continue
 
+                    # 3. Skip if video source not configured or file not found on disk
+                    source_p = cam.get("source_path", "")
+                    if not source_p or not Path(source_p).exists():
+                        LOGGER.info(f"Skipping camera {cam['name']} ({cid}) - video source not configured or missing on disk.")
+                        continue
+
                     try:
                         decoder = VideoStreamDecoder(
                             camera_id=cid,
@@ -155,6 +161,8 @@ class JobManager:
                             is_live=(cam["source_type"] == "live"),
                             target_fps=target_fps,
                             skip_static_threshold=skip_static_threshold,
+                            job_id=job_id,
+                            profile=profile_cfg,
                         )
                         resolution = f"{decoder.width}x{decoder.height}"
                         self.sqlite.update_camera_metadata(
@@ -189,8 +197,8 @@ class JobManager:
             if not cam:
                 raise ValueError(f"Camera {camera_id} not registered for job {job_id}.")
 
-            if not cam.get("source_path"):
-                raise ValueError(f"Camera {camera_id} has no source video path.")
+            if not cam.get("source_path") or not Path(cam.get("source_path", "")).exists():
+                raise ValueError(f"Camera {camera_id} video file does not exist on disk.")
 
             # Ensure in-memory Job container exists
             job = self.active_jobs.get(job_id)
@@ -205,6 +213,11 @@ class JobManager:
                     LOGGER.info(f"Camera {camera_id} ({cam['name']}) is already indexing.")
                     return
 
+                # Check if camera already completed
+                if str(cam.get("status", "")).lower() == "completed":
+                    LOGGER.info(f"Camera {camera_id} ({cam['name']}) is already completed.")
+                    return
+
                 profile_name = job.profile
                 profile_cfg = PROCESSING_PROFILES.get(profile_name, PROCESSING_PROFILES["BALANCED"])
                 sampling_rate = profile_cfg.get("sampling_rate_sec", 2.0)
@@ -217,6 +230,8 @@ class JobManager:
                     is_live=(cam["source_type"] == "live"),
                     target_fps=target_fps,
                     skip_static_threshold=skip_static_threshold,
+                    job_id=job_id,
+                    profile=profile_cfg,
                 )
 
                 resolution = f"{decoder.width}x{decoder.height}"

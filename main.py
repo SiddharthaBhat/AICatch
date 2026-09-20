@@ -13,6 +13,7 @@ import queue
 import time
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+import uuid
 import shutil
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -128,6 +129,15 @@ class JobCreate(BaseModel):
     cameras: List[CameraCreate]
     investigation_type: Optional[str] = "single_video"
 
+class CameraAddIn(BaseModel):
+    name: str
+    path: Optional[str] = ""
+    is_live: Optional[bool] = False
+
+class CameraUpdateIn(BaseModel):
+    name: Optional[str] = None
+    path: Optional[str] = None
+
 # ==============================================================================
 # 5. REST Route Handlers: Job Management
 # ==============================================================================
@@ -174,6 +184,70 @@ def start_camera(job_id: str, camera_id: str, background_tasks: BackgroundTasks)
         return {"status": "starting", "job_id": job_id, "camera_id": camera_id}
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/{job_id}/cameras")
+def add_job_camera(job_id: str, cam_in: CameraAddIn):
+    try:
+        job_record = sqlite_db.get_job(job_id)
+        if not job_record:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        
+        from pipeline.job_manager import get_file_sha256
+        cam_id = f"cam_{uuid.uuid4().hex[:8]}"
+        checksum = get_file_sha256(cam_in.path) if cam_in.path and Path(cam_in.path).exists() else None
+        sqlite_db.add_camera(
+            camera_id=cam_id,
+            job_id=job_id,
+            name=cam_in.name,
+            source_type="live" if cam_in.is_live else "file",
+            source_path=cam_in.path or "",
+            checksum=checksum
+        )
+        status = "ready" if cam_in.path and Path(cam_in.path).exists() else "not_configured"
+        return {
+            "id": cam_id,
+            "job_id": job_id,
+            "name": cam_in.name,
+            "source_path": cam_in.path or "",
+            "status": status,
+            "progress": 0.0,
+            "tracks_count": 0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/jobs/{job_id}/cameras/{camera_id}")
+def update_job_camera(job_id: str, camera_id: str, cam_update: CameraUpdateIn):
+    try:
+        job_record = sqlite_db.get_job(job_id)
+        if not job_record:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        
+        cameras = sqlite_db.get_cameras_by_job(job_id)
+        cam = next((c for c in cameras if c["id"] == camera_id), None)
+        if not cam:
+            raise HTTPException(status_code=404, detail="Camera not found.")
+        
+        from pipeline.job_manager import get_file_sha256
+        new_path = cam_update.path if cam_update.path is not None else cam["source_path"]
+        new_name = cam_update.name if cam_update.name is not None else cam["name"]
+        checksum = get_file_sha256(new_path) if new_path and Path(new_path).exists() else None
+        sqlite_db.update_camera_source(camera_id, new_path, new_name, checksum)
+        status = "ready" if new_path and Path(new_path).exists() else "not_configured"
+        return {
+            "id": camera_id,
+            "job_id": job_id,
+            "name": new_name,
+            "source_path": new_path,
+            "status": status,
+            "progress": 0.0
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -651,8 +725,17 @@ def get_job_diagnostics(job_id: str):
 def get_job_cameras(job_id: str):
     cameras = sqlite_db.get_cameras_by_job(job_id)
     job = job_manager.active_jobs.get(job_id)
+    track_counts = {}
+    try:
+        with sqlite_db.connection() as conn:
+            cur = conn.execute("SELECT camera_id, COUNT(*) FROM tracks WHERE job_id = ? GROUP BY camera_id", (job_id,))
+            track_counts = dict(cur.fetchall())
+    except Exception:
+        pass
+
     for cam in cameras:
         cid = cam["id"]
+        cam["tracks_count"] = track_counts.get(cid, 0)
         if job and cid in job.decoders:
             dec = job.decoders[cid]
             if dec.is_alive():
@@ -668,12 +751,20 @@ def get_job_cameras(job_id: str):
             cam["processed_sec"] = round(processed, 2)
             cam["duration_sec"] = round(dec.duration_sec, 2)
             cam["progress"] = 1.0 if cam["status"] == "completed" else min(0.99, processed / dur if dur > 0 else 0.0)
-        elif str(cam.get("status", "")).lower() == "completed":
-            cam["status"] = "completed"
-            cam["progress"] = 1.0
         else:
-            cam["status"] = "ready"
-            cam["progress"] = 0.0
+            raw_status = str(cam.get("status", "")).lower()
+            if raw_status == "completed":
+                cam["status"] = "completed"
+                cam["progress"] = 1.0
+            elif raw_status == "failed":
+                cam["status"] = "failed"
+                cam["progress"] = 0.0
+            elif raw_status == "not_configured" or not cam.get("source_path") or not Path(cam.get("source_path", "")).exists():
+                cam["status"] = "not_configured"
+                cam["progress"] = 0.0
+            else:
+                cam["status"] = "ready"
+                cam["progress"] = 0.0
     return cameras
 
 @app.get("/api/jobs/{job_id}/tracks")

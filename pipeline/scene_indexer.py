@@ -5,12 +5,16 @@ generates normalized full-frame CLIP embeddings, and stores them in ChromaDB
 under the scene collection with forensic metadata.
 """
 
+import collections
+import concurrent.futures
 import cv2
-import numpy as np
-from PIL import Image
-import time
 import logging
+import numpy as np
 from pathlib import Path
+from PIL import Image
+import queue
+import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from config import (
@@ -355,34 +359,341 @@ class SceneIndexer:
             "duration_sec": round(elapsed, 2)
         }
 
-    def index_job_scenes(self, job_id: str, force_reindex: bool = False) -> Dict[str, Any]:
-        """Indexes scene keyframes and spatial regions for all cameras in a given job/investigation."""
+    def index_job_scenes(
+        self,
+        job_id: str,
+        force_reindex: bool = False,
+        max_cpu_workers: int = 4,
+    ) -> Dict[str, Any]:
+        """Indexes scene keyframes and spatial regions for all cameras in a given job/investigation
+        using controlled concurrency (pipelined CPU camera preparation -> bounded GPU worker -> persistence worker).
+        """
         cameras = self.sqlite.get_cameras_by_job(job_id)
         if not cameras:
             raise ValueError(f"No cameras found for job {job_id}")
-            
-        results = []
-        total_keyframes = 0
-        total_regions = 0
-        t0 = time.time()
-        
+
+        t0 = time.perf_counter()
+
+        # Handle force_reindex cleanup
+        if force_reindex:
+            for cam in cameras:
+                cid = cam["id"]
+                try:
+                    self.vector.scene_coll.delete(where={"$and": [{"job_id": job_id}, {"camera_id": cid}]})
+                except Exception:
+                    pass
+                try:
+                    self.vector.region_coll.delete(where={"$and": [{"job_id": job_id}, {"camera_id": cid}]})
+                except Exception:
+                    pass
+
+        # Filter cameras that need indexing
+        cams_to_process = []
+        already_indexed_results = []
         for cam in cameras:
-            res = self.extract_and_index_scenes_for_camera(
-                job_id=job_id,
-                camera_id=cam["id"],
-                source_path=cam["source_path"],
-                force_reindex=force_reindex
-            )
-            results.append(res)
-            total_keyframes += res.get("keyframes_indexed", res.get("scene_vectors", 0))
-            total_regions += res.get("regions_indexed", res.get("region_vectors", 0))
-            
-        total_time = time.time() - t0
+            cid = cam["id"]
+            if not force_reindex:
+                ex_s = self.vector.scene_coll.get(where={"$and": [{"job_id": job_id}, {"camera_id": cid}]}, limit=1)
+                ex_r = self.vector.region_coll.get(where={"$and": [{"job_id": job_id}, {"camera_id": cid}]}, limit=1)
+                if ex_s and ex_s.get("ids") and ex_r and ex_r.get("ids"):
+                    existing_s_count = len(self.vector.scene_coll.get(
+                        where={"$and": [{"job_id": job_id}, {"camera_id": cid}]}
+                    )["ids"])
+                    existing_r_count = len(self.vector.region_coll.get(
+                        where={"$and": [{"job_id": job_id}, {"camera_id": cid}]}
+                    )["ids"])
+                    already_indexed_results.append({
+                        "camera_id": cid,
+                        "status": "ALREADY_INDEXED",
+                        "scene_vectors": existing_s_count,
+                        "region_vectors": existing_r_count,
+                        "frames_processed": 0,
+                    })
+                    continue
+            cams_to_process.append(cam)
+
+        if not cams_to_process:
+            return {
+                "job_id": job_id,
+                "cameras_count": len(cameras),
+                "total_scene_keyframes": sum(r.get("scene_vectors", 0) for r in already_indexed_results),
+                "total_scene_regions": sum(r.get("region_vectors", 0) for r in already_indexed_results),
+                "camera_results": already_indexed_results,
+                "elapsed_sec": round(time.perf_counter() - t0, 2),
+            }
+
+        # Concurrency primitives
+        # Bounded queues prevent RAM and VRAM explosion
+        work_queue: queue.Queue[Optional[Tuple[str, str, Image.Image, Dict[str, Any]]]] = queue.Queue(maxsize=128)
+        persist_queue: queue.Queue[Optional[Tuple[str, List[str], List[List[float]], List[Dict[str, Any]]]]] = queue.Queue(maxsize=128)
+
+        total_keyframes_counter = collections.Counter()
+        total_regions_counter = collections.Counter()
+        camera_stats: Dict[str, Dict[str, Any]] = {}
+        error_holder: List[Exception] = []
+
+        # 1. Persistence Worker (Single writer thread for ChromaDB)
+        def persistence_worker_loop():
+            while True:
+                task = persist_queue.get()
+                if task is None:
+                    persist_queue.task_done()
+                    break
+                item_type, ids, embs, metas = task
+                try:
+                    if item_type == "scene":
+                        self.vector.add_scene_embeddings(ids, embs, metas)
+                    elif item_type == "region":
+                        self.vector.add_region_embeddings(ids, embs, metas)
+                except Exception as ex:
+                    LOGGER.error(f"Persistence error for {item_type}: {ex}", exc_info=True)
+                    error_holder.append(ex)
+                finally:
+                    persist_queue.task_done()
+
+        persist_thread = threading.Thread(target=persistence_worker_loop, name="SceneRegionPersistWorker", daemon=True)
+        persist_thread.start()
+
+        # 2. GPU Worker (Single controlled CLIP inference path)
+        def gpu_worker_loop():
+            accum_scenes: List[Tuple[str, Image.Image, Dict[str, Any]]] = []
+            accum_regions: List[Tuple[str, Image.Image, Dict[str, Any]]] = []
+
+            def flush_scenes(final=False):
+                if not accum_scenes:
+                    return
+                ids = [it[0] for it in accum_scenes]
+                pils = [it[1] for it in accum_scenes]
+                metas = [it[2] for it in accum_scenes]
+
+                # Match baseline exact single-image inference for scene keyframes
+                if self.gpu_scheduler is not None and hasattr(self.gpu_scheduler, "embed_image"):
+                    embs = [self.gpu_scheduler.embed_image(img) for img in pils]
+                else:
+                    proc, mod = self._get_clip()
+                    import torch
+                    embs = []
+                    for img in pils:
+                        rgb_img = img if img.mode == "RGB" else img.convert("RGB")
+                        inp = proc(images=[rgb_img], return_tensors="pt").to(CLIP_DEVICE)
+                        if CLIP_DEVICE == "cuda":
+                            inp["pixel_values"] = inp["pixel_values"].half()
+                        with torch.no_grad():
+                            res = mod.get_image_features(**inp)
+                            if hasattr(res, "pooler_output"):
+                                res = res.pooler_output
+                            res = res / res.norm(p=2, dim=-1, keepdim=True)
+                            embs.append(res.cpu().float().numpy()[0].tolist())
+
+                persist_queue.put(("scene", ids, embs, metas))
+                accum_scenes.clear()
+
+            def flush_regions(final=False):
+                if not accum_regions:
+                    return
+                ids = [it[0] for it in accum_regions]
+                pils = [it[1] for it in accum_regions]
+                metas = [it[2] for it in accum_regions]
+
+                # Match baseline exact batched inference for region tiles
+                if self.gpu_scheduler is not None and hasattr(self.gpu_scheduler, "embed_images_batch"):
+                    embs = self.gpu_scheduler.embed_images_batch(pils, batch_size=16)
+                else:
+                    proc, mod = self._get_clip()
+                    import torch
+                    embs = []
+                    for b_i in range(0, len(pils), 16):
+                        chunk = pils[b_i : b_i + 16]
+                        rgb_chunk = [img if img.mode == "RGB" else img.convert("RGB") for img in chunk]
+                        inp = proc(images=rgb_chunk, return_tensors="pt", padding=True).to(CLIP_DEVICE)
+                        if CLIP_DEVICE == "cuda":
+                            inp["pixel_values"] = inp["pixel_values"].half()
+                        with torch.no_grad():
+                            res = mod.get_image_features(**inp)
+                            if hasattr(res, "pooler_output"):
+                                res = res.pooler_output
+                            res = res / res.norm(p=2, dim=-1, keepdim=True)
+                            embs.extend(res.cpu().float().numpy().tolist())
+
+                persist_queue.put(("region", ids, embs, metas))
+                accum_regions.clear()
+
+            while True:
+                try:
+                    item = work_queue.get(timeout=0.2)
+                except queue.Empty:
+                    if error_holder:
+                        break
+                    continue
+
+                if item is None:
+                    work_queue.task_done()
+                    break
+
+                item_type, vec_id, pil_img, meta = item
+                if item_type == "scene":
+                    accum_scenes.append((vec_id, pil_img, meta))
+                    if len(accum_scenes) >= 16:
+                        flush_scenes()
+                elif item_type == "region":
+                    accum_regions.append((vec_id, pil_img, meta))
+                    if len(accum_regions) >= 32:
+                        flush_regions()
+
+                work_queue.task_done()
+
+            # Flush any remaining items
+            flush_scenes(final=True)
+            flush_regions(final=True)
+
+        gpu_thread = threading.Thread(target=gpu_worker_loop, name="SceneRegionGPUWorker", daemon=True)
+        gpu_thread.start()
+
+        # 3. CPU Camera Workers (Video decode, keyframe detection, tiling, crop saving)
+        def process_camera_cpu(cam: Dict[str, Any]):
+            cid = cam["id"]
+            source_path = cam["source_path"]
+
+            cap = cv2.VideoCapture(source_path)
+            if not cap.isOpened():
+                LOGGER.error(f"Cannot open video source: {source_path}")
+                return
+
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 12.0
+            frame_step = max(1, int(fps * 3.0))
+
+            last_gray: Optional[np.ndarray] = None
+            last_keyframe_time = -999.0
+            current_frame_idx = 0
+            extracted_count = 0
+            skipped_duplicates = 0
+            regions_count = 0
+            t_cam_0 = time.perf_counter()
+
+            try:
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    current_frame_idx += 1
+                    timestamp = current_frame_idx / fps
+
+                    is_periodic = (current_frame_idx % frame_step == 1) or (current_frame_idx == 1)
+                    time_since_last = timestamp - last_keyframe_time
+
+                    small_gray = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY)
+                    is_scene_change = False
+
+                    if last_gray is not None and time_since_last >= 1.5:
+                        diff = cv2.absdiff(last_gray, small_gray)
+                        change_ratio = float(np.count_nonzero(diff > 25)) / float(diff.size)
+                        if change_ratio >= 0.08:
+                            is_scene_change = True
+
+                    should_capture = (is_periodic and time_since_last >= 2.0) or is_scene_change or (current_frame_idx == 1)
+
+                    if should_capture:
+                        # Save full keyframe image to disk
+                        kf_path = self.media.save_keyframe(frame, job_id, cid, current_frame_idx, timestamp)
+                        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                        vec_id = f"scene_{job_id}_{cid}_f{current_frame_idx}"
+                        meta = {
+                            "job_id": job_id,
+                            "investigation_id": job_id,
+                            "camera_id": cid,
+                            "video_id": cid,
+                            "frame_idx": current_frame_idx,
+                            "timestamp": round(float(timestamp), 3),
+                            "embedding_type": "scene",
+                            "object_type": "scene",
+                            "source_frame_path": str(kf_path),
+                            "source_video": source_path,
+                            "embedding_model": EMBEDDING_MODEL_NAME,
+                            "embedding_version": EMBEDDING_VERSION,
+                        }
+                        work_queue.put(("scene", vec_id, pil_img, meta))
+                        extracted_count += 1
+                        total_keyframes_counter[cid] += 1
+                        last_gray = small_gray
+                        last_keyframe_time = timestamp
+
+                        # Generate overlapping spatial tiles
+                        tiles = self.generate_frame_tiles(frame)
+                        for tile_idx, (bx1, by1, bx2, by2), tile_bgr in tiles:
+                            reg_path = self.media.save_region(tile_bgr, job_id, cid, current_frame_idx, tile_idx)
+                            tile_pil = Image.fromarray(cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB))
+                            r_vec_id = f"region_{job_id}_{cid}_f{current_frame_idx}_t{tile_idx}"
+                            r_meta = {
+                                "job_id": job_id,
+                                "investigation_id": job_id,
+                                "camera_id": cid,
+                                "video_id": cid,
+                                "frame_idx": current_frame_idx,
+                                "tile_idx": tile_idx,
+                                "timestamp": round(float(timestamp), 3),
+                                "bbox": f"{bx1},{by1},{bx2},{by2}",
+                                "bbox_x1": float(bx1),
+                                "bbox_y1": float(by1),
+                                "bbox_x2": float(bx2),
+                                "bbox_y2": float(by2),
+                                "embedding_type": "region",
+                                "object_type": "region",
+                                "crop_path": str(reg_path),
+                                "source_frame_path": str(kf_path),
+                                "source_video": source_path,
+                                "embedding_model": EMBEDDING_MODEL_NAME,
+                                "embedding_version": EMBEDDING_VERSION,
+                            }
+                            work_queue.put(("region", r_vec_id, tile_pil, r_meta))
+                            regions_count += 1
+                            total_regions_counter[cid] += 1
+                    else:
+                        skipped_duplicates += 1
+            finally:
+                cap.release()
+
+            camera_stats[cid] = {
+                "camera_id": cid,
+                "status": "INDEXED",
+                "total_video_frames": total_frames,
+                "keyframes_indexed": extracted_count,
+                "regions_indexed": regions_count,
+                "frames_skipped": skipped_duplicates,
+                "deduplication_rate": round(skipped_duplicates / max(1, total_frames), 4),
+                "duration_sec": round(time.perf_counter() - t_cam_0, 2),
+            }
+
+        # Run CPU camera workers concurrently
+        workers = min(max_cpu_workers, len(cams_to_process)) if cams_to_process else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="SceneCPUWorker") as executor:
+            futures = [executor.submit(process_camera_cpu, c) for c in cams_to_process]
+            concurrent.futures.wait(futures)
+            for f in futures:
+                if f.exception():
+                    error_holder.append(f.exception())
+
+        # Signal GPU worker to finish and wait
+        work_queue.put(None)
+        gpu_thread.join(timeout=60.0)
+
+        # Signal Persistence worker to finish and wait
+        persist_queue.put(None)
+        persist_thread.join(timeout=60.0)
+
+        if error_holder:
+            raise error_holder[0]
+
+        elapsed = round(time.perf_counter() - t0, 2)
+        total_kf = sum(total_keyframes_counter.values()) + sum(r.get("scene_vectors", 0) for r in already_indexed_results)
+        total_reg = sum(total_regions_counter.values()) + sum(r.get("region_vectors", 0) for r in already_indexed_results)
+
         return {
             "job_id": job_id,
             "cameras_count": len(cameras),
-            "total_scene_keyframes": total_keyframes,
-            "total_scene_regions": total_regions,
-            "camera_results": results,
-            "elapsed_sec": round(total_time, 2)
+            "total_scene_keyframes": total_kf,
+            "total_scene_regions": total_reg,
+            "camera_results": list(camera_stats.values()) + already_indexed_results,
+            "elapsed_sec": elapsed,
         }

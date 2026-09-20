@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { 
   ArrowLeft, Play, Pause, Square, 
-  AlertCircle, ArrowRight, Loader2
+  AlertCircle, ArrowRight, Loader2,
+  Plus, Upload, Video, CheckCircle2, RefreshCw
 } from "lucide-react";
 import type { Job, Camera, Track } from "../types";
 import { apiService } from "../services/api";
@@ -23,7 +24,11 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [startingCams, setStartingCams] = useState<Record<string, boolean>>({});
+  const [uploadingCams, setUploadingCams] = useState<Record<string, { uploading: boolean; error?: string }>>({});
+  const [addingCamera, setAddingCamera] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const fetchJobDetails = async () => {
     try {
@@ -47,7 +52,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
     if (job?.status === "completed" || job?.status === "failed" || job?.status === "cancelled") {
       return;
     }
-    const interval = setInterval(fetchJobDetails, 2500);
+    const interval = setInterval(fetchJobDetails, 2000);
     return () => clearInterval(interval);
   }, [jobId, job?.status]);
 
@@ -74,6 +79,36 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
       setStatusMsg({ type: "error", text: err.message || "Failed to start camera." });
     } finally {
       setStartingCams(prev => ({ ...prev, [cameraId]: false }));
+    }
+  };
+
+  const handleAddCamera = async () => {
+    setAddingCamera(true);
+    try {
+      const nextIdx = cameras.length + 1;
+      const defaultName = nextIdx === 3 ? "Parking Area" : nextIdx === 4 ? "Back Exit" : `Camera ${nextIdx}`;
+      await apiService.addJobCamera(jobId, defaultName);
+      setStatusMsg({ type: "success", text: `Added ${defaultName} to investigation.` });
+      await fetchJobDetails();
+    } catch (err: any) {
+      setStatusMsg({ type: "error", text: err.message || "Failed to add camera feed." });
+    } finally {
+      setAddingCamera(false);
+    }
+  };
+
+  const handleCameraFileUpload = async (cameraId: string, file: File) => {
+    setUploadingCams(prev => ({ ...prev, [cameraId]: { uploading: true } }));
+    try {
+      const uploadRes = await apiService.uploadVideoFile(file);
+      await apiService.updateJobCamera(jobId, cameraId, { path: uploadRes.path });
+      setStatusMsg({ type: "success", text: `Uploaded video for camera successfully.` });
+      await fetchJobDetails();
+    } catch (err: any) {
+      setUploadingCams(prev => ({ ...prev, [cameraId]: { uploading: false, error: err.message || "Upload failed." } }));
+      setStatusMsg({ type: "error", text: err.message || "Failed to upload video for camera." });
+    } finally {
+      setUploadingCams(prev => ({ ...prev, [cameraId]: { uploading: false } }));
     }
   };
 
@@ -150,7 +185,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
   const isIndexing = job.status === "indexing" || job.status === "starting";
 
   const hasReadyCameras = cameras.some(c => (c.status as string) === "ready" || (c.status as string) === "inactive");
-  const anyIndexingOrComplete = cameras.some(c => (c.status as string) === "indexing" || (c.status as string) === "completed");
+  const anyIndexingOrComplete = cameras.some(c => (c.status as string) === "indexing" || (c.status as string) === "active" || (c.status as string) === "completed");
   const startAllLabel = anyIndexingOrComplete ? "Start Remaining" : "Start Indexing All";
 
   return (
@@ -191,7 +226,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
 
         {/* Global Action Buttons */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          {hasReadyCameras && !isComplete && (
+          {hasReadyCameras && (
             <button 
               type="button" 
               className="btn btn-primary"
@@ -312,20 +347,37 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
 
       {/* Per-Camera Cards Grid */}
       <div>
-        <h2 style={{ fontSize: "16px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "14px" }}>
-          Camera Sources Status ({cameras.length})
-        </h2>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+          <h2 style={{ fontSize: "16px", fontWeight: "600", color: "var(--text-primary)" }}>
+            Camera Sources Status ({cameras.length})
+          </h2>
+
+          {isMulti && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleAddCamera}
+              disabled={addingCamera || actionLoading}
+              style={{ fontSize: "12px", padding: "6px 12px", display: "flex", alignItems: "center", gap: "6px" }}
+            >
+              {addingCamera ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+              Add Camera
+            </button>
+          )}
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "18px" }}>
           {cameras.map((cam, idx) => {
             const camNumberStr = `CAMERA ${(idx + 1).toString().padStart(2, "0")}`;
             const camTracks = tracks.filter(t => t.camera_id === cam.id);
+            const isCamUploading = uploadingCams[cam.id]?.uploading;
             
             // Derive camera-specific state
-            const rawCamStatus = (cam.status as string) || "ready";
+            const rawCamStatus = (cam.status as string) || "not_configured";
+            const isCamNotConfigured = rawCamStatus === "not_configured" || (!cam.source_path && !isCamUploading);
             const isCamComplete = rawCamStatus === "completed";
             const isCamIndexing = rawCamStatus === "indexing" || rawCamStatus === "active";
-            const isCamReady = rawCamStatus === "ready" || rawCamStatus === "inactive";
+            const isCamReady = (rawCamStatus === "ready" || rawCamStatus === "inactive") && !isCamNotConfigured && !isCamUploading;
             const isCamFailed = rawCamStatus === "failed";
 
             let camProgressVal = typeof cam.progress === "number" ? cam.progress : 0;
@@ -334,21 +386,43 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
             }
             const camProgress = isCamComplete ? 100 : Math.min(99, Math.round(camProgressVal));
 
-            let camStatusText = isCamComplete ? "Complete" : isCamIndexing ? "Indexing" : isCamFailed ? "Failed" : "Ready";
-            let camStatusColor = isCamComplete 
+            let camStatusText = isCamUploading
+              ? "UPLOADING"
+              : isCamNotConfigured
+              ? "NOT CONFIGURED"
+              : isCamComplete
+              ? "COMPLETED"
+              : isCamIndexing
+              ? "INDEXING"
+              : isCamFailed
+              ? "FAILED"
+              : "READY";
+
+            let camStatusColor = isCamUploading
+              ? "var(--color-accent)"
+              : isCamNotConfigured
+              ? "var(--text-muted)"
+              : isCamComplete 
               ? "var(--color-success)" 
               : isCamIndexing 
               ? "var(--color-accent)" 
               : isCamFailed 
               ? "var(--color-danger)" 
-              : "var(--text-muted)";
-            let camStatusBg = isCamComplete 
+              : "var(--color-warning, #f59e0b)";
+
+            let camStatusBg = isCamUploading
+              ? "rgba(6, 182, 212, 0.1)"
+              : isCamNotConfigured
+              ? "rgba(148, 163, 184, 0.1)"
+              : isCamComplete 
               ? "rgba(16, 185, 129, 0.1)" 
               : isCamIndexing 
               ? "rgba(6, 182, 212, 0.1)" 
               : isCamFailed 
               ? "rgba(244, 63, 94, 0.1)" 
-              : "rgba(148, 163, 184, 0.1)";
+              : "rgba(245, 158, 11, 0.1)";
+
+            const fileName = cam.source_path ? cam.source_path.split("/").pop()?.split("\\").pop() : null;
 
             return (
               <div 
@@ -377,9 +451,13 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
                         borderRadius: "4px",
                         backgroundColor: camStatusBg,
                         color: camStatusColor,
-                        textTransform: "uppercase"
+                        textTransform: "uppercase",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px"
                       }}
                     >
+                      {isCamComplete && <CheckCircle2 size={11} />}
                       {camStatusText}
                     </span>
                   </div>
@@ -388,34 +466,104 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
                     {cam.name}
                   </h3>
 
-                  <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "12px" }}>
-                    {cam.source_path.split("/").pop()}
-                  </div>
+                  {fileName ? (
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
+                      <Video size={12} style={{ flexShrink: 0, color: "var(--color-accent)" }} />
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{fileName}</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "12px" }}>
+                      No video footage assigned
+                    </div>
+                  )}
 
-                  {/* Individual Camera Progress */}
-                  <div style={{ width: "100%", height: "6px", backgroundColor: "var(--bg-input)", borderRadius: "3px", overflow: "hidden", marginBottom: "12px" }}>
+                  {/* Individual Camera Progress (for Indexing or Completed) */}
+                  {(isCamIndexing || isCamComplete) && (
+                    <div style={{ width: "100%", height: "6px", backgroundColor: "var(--bg-input)", borderRadius: "3px", overflow: "hidden", marginBottom: "12px" }}>
+                      <div 
+                        style={{ 
+                          width: `${camProgress}%`, 
+                          height: "100%", 
+                          backgroundColor: isCamComplete ? "var(--color-success)" : "var(--color-accent)",
+                          transition: "width 0.4s ease"
+                        }} 
+                      />
+                    </div>
+                  )}
+
+                  {/* Upload Dropzone for NOT_CONFIGURED cameras */}
+                  {isCamNotConfigured && !isCamUploading && (
                     <div 
-                      style={{ 
-                        width: `${camProgress}%`, 
-                        height: "100%", 
-                        backgroundColor: isCamComplete ? "var(--color-success)" : "var(--color-accent)",
-                        transition: "width 0.4s ease"
-                      }} 
-                    />
-                  </div>
+                      onClick={() => fileInputRefs.current[cam.id]?.click()}
+                      style={{
+                        border: "1.5px dashed var(--border-color)",
+                        borderRadius: "var(--radius-main)",
+                        padding: "12px",
+                        backgroundColor: "var(--bg-input)",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: "8px",
+                        color: "var(--text-secondary)",
+                        marginBottom: "12px",
+                        transition: "border-color 0.2s ease"
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--color-accent)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border-color)")}
+                    >
+                      <input 
+                        type="file"
+                        accept="video/*"
+                        ref={el => { fileInputRefs.current[cam.id] = el; }}
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files[0]) {
+                            handleCameraFileUpload(cam.id, e.target.files[0]);
+                          }
+                        }}
+                      />
+                      <Upload size={14} style={{ color: "var(--color-accent)" }} />
+                      <span style={{ fontSize: "11px", fontWeight: "500" }}>Upload Video Footage</span>
+                    </div>
+                  )}
 
-                  {/* Per-camera start control for unstarted cameras */}
-                  {isCamReady && !isComplete && (
+                  {/* Uploading State Indicator */}
+                  {isCamUploading && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 12px", borderRadius: "6px", backgroundColor: "rgba(6, 182, 212, 0.08)", marginBottom: "12px" }}>
+                      <Loader2 size={14} className="animate-spin" style={{ color: "var(--color-accent)" }} />
+                      <span style={{ fontSize: "11px", color: "var(--color-accent)", fontWeight: "500" }}>Uploading video to server...</span>
+                    </div>
+                  )}
+
+                  {/* Per-camera start control for READY cameras */}
+                  {isCamReady && (
                     <div style={{ marginTop: "4px", marginBottom: "12px" }}>
                       <button
                         type="button"
                         className="btn btn-primary"
                         onClick={() => handleStartCamera(cam.id)}
                         disabled={actionLoading || startingCams[cam.id]}
-                        style={{ fontSize: "11px", padding: "6px 12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
+                        style={{ fontSize: "11px", padding: "6px 12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", fontWeight: "600" }}
                       >
                         {startingCams[cam.id] ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
                         Start Indexing
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Failed state: Retry button */}
+                  {isCamFailed && (
+                    <div style={{ marginTop: "4px", marginBottom: "12px" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => handleStartCamera(cam.id)}
+                        disabled={actionLoading || startingCams[cam.id]}
+                        style={{ fontSize: "11px", padding: "6px 12px", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", color: "var(--color-danger)" }}
+                      >
+                        {startingCams[cam.id] ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        Retry Indexing
                       </button>
                     </div>
                   )}
@@ -423,7 +571,7 @@ export const LiveProcessing: React.FC<LiveProcessingProps> = ({
 
                 {/* Footer Metrics */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: "10px", borderTop: "1px solid var(--border-color)", fontSize: "11px", color: "var(--text-secondary)" }}>
-                  <span>Tracks: <strong style={{ color: "var(--text-primary)" }}>{camTracks.length}</strong></span>
+                  <span>Tracks: <strong style={{ color: "var(--text-primary)" }}>{cam.tracks_count !== undefined ? cam.tracks_count : camTracks.length}</strong></span>
                   <span>Progress: <strong style={{ color: "var(--text-primary)" }}>{camProgress}%</strong></span>
                 </div>
               </div>

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ArrowLeft, Layers, Plus, Trash2, Video, Loader2, CheckCircle2, AlertCircle, Upload } from "lucide-react";
+import { ArrowLeft, Layers, Plus, Trash2, Video, Loader2, CheckCircle2, AlertCircle, Upload, Play } from "lucide-react";
 import { apiService } from "../services/api";
 
 interface CameraDraft {
@@ -110,6 +110,55 @@ export const CreateMultiCamera: React.FC<CreateMultiCameraProps> = ({ onBack, on
   };
 
   const allUploaded = cameras.length >= 2 && cameras.every(c => c.uploadStatus === "UPLOADED" && c.path);
+
+  const handleStartIndividualCamera = async (camId: string) => {
+    if (!caseName.trim()) {
+      setGeneralError("Please enter an investigation / case name before starting indexing.");
+      return;
+    }
+    setSubmitting(true);
+    setGeneralError(null);
+    try {
+      const cameraPayload = cameras.map((c, idx) => ({
+        name: c.name.trim() || `Camera ${idx + 1}`,
+        path: c.path || "",
+        is_live: false
+      }));
+
+      const jobId = await apiService.createJob(caseName.trim(), profile, cameraPayload, "multi_camera");
+      const createdCams = await apiService.getJobCameras(jobId);
+      const targetCamIdx = cameras.findIndex(c => c.id === camId);
+      const targetBackendCam = createdCams[targetCamIdx] || createdCams[0];
+      if (targetBackendCam) {
+        await apiService.startCamera(jobId, targetBackendCam.id);
+      }
+      onJobCreated(jobId);
+    } catch (err: any) {
+      setGeneralError(err.message || "Failed to start camera indexing.");
+      setSubmitting(false);
+    }
+  };
+
+  const handleCreateOnly = async () => {
+    if (!caseName.trim()) {
+      setGeneralError("Please enter an investigation / case name.");
+      return;
+    }
+    setSubmitting(true);
+    setGeneralError(null);
+    try {
+      const cameraPayload = cameras.map((c, idx) => ({
+        name: c.name.trim() || `Camera ${idx + 1}`,
+        path: c.path || "",
+        is_live: false
+      }));
+      const jobId = await apiService.createJob(caseName.trim(), profile, cameraPayload, "multi_camera");
+      onJobCreated(jobId);
+    } catch (err: any) {
+      setGeneralError(err.message || "Failed to create investigation.");
+      setSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -376,9 +425,21 @@ export const CreateMultiCamera: React.FC<CreateMultiCameraProps> = ({ onBack, on
                           )}
 
                           {cam.uploadStatus === "UPLOADED" && (
-                            <span style={{ fontSize: "11px", color: "var(--color-success)", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
-                              <CheckCircle2 size={13} /> Uploaded ✓
-                            </span>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <span style={{ fontSize: "11px", color: "var(--color-success)", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
+                                <CheckCircle2 size={13} /> Uploaded ✓
+                              </span>
+                              <button 
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={(e) => { e.stopPropagation(); handleStartIndividualCamera(cam.id); }}
+                                disabled={submitting}
+                                style={{ padding: "3px 8px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px", fontWeight: "600" }}
+                                title="Start indexing this camera"
+                              >
+                                <Play size={11} /> Start Indexing
+                              </button>
+                            </div>
                           )}
 
                           {cam.uploadStatus === "FAILED" && (
@@ -429,6 +490,16 @@ export const CreateMultiCamera: React.FC<CreateMultiCameraProps> = ({ onBack, on
             Cancel
           </button>
           
+          <button 
+            type="button" 
+            className="btn btn-secondary" 
+            onClick={handleCreateOnly}
+            disabled={submitting || !caseName.trim()}
+            style={{ padding: "10px 18px", fontSize: "13px" }}
+          >
+            Configure & Start in Workspace
+          </button>
+
           <button 
             type="submit" 
             className="btn btn-primary"

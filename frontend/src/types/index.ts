@@ -22,12 +22,13 @@ export interface Camera {
   name: string;
   source_type: 'live' | 'file';
   source_path: string;
-  status: 'active' | 'inactive' | 'ready' | 'indexing' | 'completed' | 'failed' | string;
+  status: 'active' | 'inactive' | 'ready' | 'indexing' | 'completed' | 'failed' | 'not_configured' | 'uploading' | string;
   resolution?: string;
   fps?: number;
   progress?: number;
   processed_sec?: number;
   duration_sec?: number;
+  tracks_count?: number;
 }
 
 export interface Track {

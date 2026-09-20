@@ -77,6 +77,26 @@ export const apiService = {
     if (!res.ok) throw new Error(`Failed to start camera ${cameraId}`);
   },
 
+  async addJobCamera(jobId: string, name: string, path: string = "", isLive: boolean = false): Promise<Camera> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, path, is_live: isLive })
+    });
+    if (!res.ok) throw new Error("Failed to add camera");
+    return res.json();
+  },
+
+  async updateJobCamera(jobId: string, cameraId: string, data: { name?: string; path?: string }): Promise<Camera> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error(`Failed to update camera ${cameraId}`);
+    return res.json();
+  },
+
   async pauseJob(jobId: string): Promise<void> {
     const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/pause`, { method: "POST" });
     if (!res.ok) throw new Error("Failed to pause job");

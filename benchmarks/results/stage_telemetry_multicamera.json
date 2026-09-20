@@ -1,0 +1,559 @@
+{
+  "video": "data\\media\\uploads\\inside.mp4",
+  "cases": [
+    {
+      "camera_count": 2,
+      "profile": "FORENSIC",
+      "wall_clock_sec": 17.156,
+      "frames_analyzed": 299,
+      "effective_fps": 17.428,
+      "detections_persisted": 698,
+      "detections_per_camera": {
+        "cam_12fd5fc9": 351,
+        "cam_8b7f3515": 347
+      },
+      "decoder_frames": {
+        "cam_12fd5fc9": 314,
+        "cam_8b7f3515": 313
+      },
+      "persistence_drained": true,
+      "stage_breakdown": {
+        "1_frame_acquisition": {
+          "calls": 502,
+          "total_ms": 4.54,
+          "avg_ms": 0.01,
+          "max_ms": 0.33,
+          "pct_runtime": 0.03
+        },
+        "2_batch_formation": {
+          "calls": 33,
+          "total_ms": 28.43,
+          "avg_ms": 0.86,
+          "max_ms": 2.94,
+          "pct_runtime": 0.17
+        },
+        "3_yolo_preprocessing": {
+          "calls": 32,
+          "total_ms": 1231.81,
+          "avg_ms": 38.49,
+          "max_ms": 231.33,
+          "pct_runtime": 7.18
+        },
+        "4_yolo_h2d": {
+          "calls": 28,
+          "total_ms": 1710.46,
+          "avg_ms": 61.09,
+          "max_ms": 251.87,
+          "pct_runtime": 9.97
+        },
+        "5_yolo_inference": {
+          "calls": 28,
+          "total_ms": 4086.94,
+          "avg_ms": 145.96,
+          "max_ms": 406.25,
+          "pct_runtime": 23.82
+        },
+        "6_yolo_output_materialization": {
+          "calls": 28,
+          "total_ms": 59.28,
+          "avg_ms": 2.12,
+          "max_ms": 4.98,
+          "pct_runtime": 0.35
+        },
+        "7_tracking": {
+          "calls": 28,
+          "total_ms": 502.32,
+          "avg_ms": 17.94,
+          "max_ms": 182.9,
+          "pct_runtime": 2.93
+        },
+        "8_crop_preparation": {
+          "calls": 28,
+          "total_ms": 26.08,
+          "avg_ms": 0.93,
+          "max_ms": 4.92,
+          "pct_runtime": 0.15
+        },
+        "9_clip_preprocessing": {
+          "calls": 27,
+          "total_ms": 472.01,
+          "avg_ms": 17.48,
+          "max_ms": 62.75,
+          "pct_runtime": 2.75
+        },
+        "10_clip_h2d": {
+          "calls": 27,
+          "total_ms": 39.85,
+          "avg_ms": 1.48,
+          "max_ms": 12.3,
+          "pct_runtime": 0.23
+        },
+        "11_clip_inference": {
+          "calls": 27,
+          "total_ms": 948.8,
+          "avg_ms": 35.14,
+          "max_ms": 139.95,
+          "pct_runtime": 5.53
+        },
+        "12_clip_output_materialization": {
+          "calls": 27,
+          "total_ms": 16.5,
+          "avg_ms": 0.61,
+          "max_ms": 2.92,
+          "pct_runtime": 0.1
+        },
+        "13_reid_preprocessing": {
+          "calls": 27,
+          "total_ms": 348.0,
+          "avg_ms": 12.89,
+          "max_ms": 40.71,
+          "pct_runtime": 2.03
+        },
+        "14_reid_h2d": {
+          "calls": 27,
+          "total_ms": 20.69,
+          "avg_ms": 0.77,
+          "max_ms": 1.51,
+          "pct_runtime": 0.12
+        },
+        "15_reid_inference": {
+          "calls": 27,
+          "total_ms": 2398.52,
+          "avg_ms": 88.83,
+          "max_ms": 257.93,
+          "pct_runtime": 13.98
+        },
+        "16_reid_output_materialization": {
+          "calls": 27,
+          "total_ms": 11.78,
+          "avg_ms": 0.44,
+          "max_ms": 1.52,
+          "pct_runtime": 0.07
+        },
+        "17_scheduler_bookkeeping": {
+          "calls": 28,
+          "total_ms": 115.21,
+          "avg_ms": 4.11,
+          "max_ms": 18.66,
+          "pct_runtime": 0.67
+        }
+      },
+      "batch_stats": {
+        "histogram": {
+          "1": 1,
+          "16": 31
+        },
+        "total_batches": 32,
+        "total_frames": 497,
+        "average_batch_size": 15.53,
+        "max_batch_size": 16
+      },
+      "workload_counts": {
+        "candidates_evaluated": 698,
+        "clip_crops": 160,
+        "reid_crops": 160
+      },
+      "telemetry": {
+        "sample_count": 43,
+        "gpu_util_percent": {
+          "average": 17.86,
+          "peak": 94.0
+        },
+        "gpu_idle_percent_at_or_below_5": 53.49,
+        "gpu_memory_used_mb": {
+          "average": 2124.33,
+          "peak": 2246.0
+        },
+        "torch_allocated_mb": {
+          "average": 398.73,
+          "peak": 604.12
+        },
+        "decoder_queue_depth": {
+          "average": 108.49,
+          "peak": 128.0
+        },
+        "enrichment_queue_depth": {
+          "average": 21.07,
+          "peak": 79.0
+        },
+        "persistence_queue_depth": {
+          "average": 0.0,
+          "peak": 0.0
+        },
+        "lock_occupancy_percent": 65.12
+      }
+    },
+    {
+      "camera_count": 4,
+      "profile": "FORENSIC",
+      "wall_clock_sec": 16.75,
+      "frames_analyzed": 305,
+      "effective_fps": 18.209,
+      "detections_persisted": 598,
+      "detections_per_camera": {
+        "cam_0e01c8aa": 149,
+        "cam_8dd6d334": 149,
+        "cam_941b3b38": 151,
+        "cam_e1d4cf04": 149
+      },
+      "decoder_frames": {
+        "cam_0e01c8aa": 220,
+        "cam_941b3b38": 220,
+        "cam_8dd6d334": 215,
+        "cam_e1d4cf04": 213
+      },
+      "persistence_drained": true,
+      "stage_breakdown": {
+        "1_frame_acquisition": {
+          "calls": 648,
+          "total_ms": 8.18,
+          "avg_ms": 0.01,
+          "max_ms": 0.28,
+          "pct_runtime": 0.05
+        },
+        "2_batch_formation": {
+          "calls": 39,
+          "total_ms": 59.09,
+          "avg_ms": 1.52,
+          "max_ms": 3.59,
+          "pct_runtime": 0.35
+        },
+        "3_yolo_preprocessing": {
+          "calls": 39,
+          "total_ms": 1940.76,
+          "avg_ms": 49.76,
+          "max_ms": 74.5,
+          "pct_runtime": 11.59
+        },
+        "4_yolo_h2d": {
+          "calls": 32,
+          "total_ms": 1433.74,
+          "avg_ms": 44.8,
+          "max_ms": 172.52,
+          "pct_runtime": 8.56
+        },
+        "5_yolo_inference": {
+          "calls": 32,
+          "total_ms": 4731.41,
+          "avg_ms": 147.86,
+          "max_ms": 358.4,
+          "pct_runtime": 28.25
+        },
+        "6_yolo_output_materialization": {
+          "calls": 32,
+          "total_ms": 97.71,
+          "avg_ms": 3.05,
+          "max_ms": 40.26,
+          "pct_runtime": 0.58
+        },
+        "7_tracking": {
+          "calls": 32,
+          "total_ms": 280.36,
+          "avg_ms": 8.76,
+          "max_ms": 30.18,
+          "pct_runtime": 1.67
+        },
+        "8_crop_preparation": {
+          "calls": 32,
+          "total_ms": 29.92,
+          "avg_ms": 0.93,
+          "max_ms": 4.31,
+          "pct_runtime": 0.18
+        },
+        "9_clip_preprocessing": {
+          "calls": 29,
+          "total_ms": 547.82,
+          "avg_ms": 18.89,
+          "max_ms": 179.18,
+          "pct_runtime": 3.27
+        },
+        "10_clip_h2d": {
+          "calls": 29,
+          "total_ms": 33.98,
+          "avg_ms": 1.17,
+          "max_ms": 4.2,
+          "pct_runtime": 0.2
+        },
+        "11_clip_inference": {
+          "calls": 29,
+          "total_ms": 1073.62,
+          "avg_ms": 37.02,
+          "max_ms": 216.64,
+          "pct_runtime": 6.41
+        },
+        "12_clip_output_materialization": {
+          "calls": 29,
+          "total_ms": 17.35,
+          "avg_ms": 0.6,
+          "max_ms": 7.05,
+          "pct_runtime": 0.1
+        },
+        "13_reid_preprocessing": {
+          "calls": 29,
+          "total_ms": 363.33,
+          "avg_ms": 12.53,
+          "max_ms": 60.93,
+          "pct_runtime": 2.17
+        },
+        "14_reid_h2d": {
+          "calls": 29,
+          "total_ms": 19.94,
+          "avg_ms": 0.69,
+          "max_ms": 1.43,
+          "pct_runtime": 0.12
+        },
+        "15_reid_inference": {
+          "calls": 29,
+          "total_ms": 2292.31,
+          "avg_ms": 79.05,
+          "max_ms": 318.02,
+          "pct_runtime": 13.69
+        },
+        "16_reid_output_materialization": {
+          "calls": 29,
+          "total_ms": 10.1,
+          "avg_ms": 0.35,
+          "max_ms": 0.71,
+          "pct_runtime": 0.06
+        },
+        "17_scheduler_bookkeeping": {
+          "calls": 32,
+          "total_ms": 99.14,
+          "avg_ms": 3.1,
+          "max_ms": 14.12,
+          "pct_runtime": 0.59
+        }
+      },
+      "batch_stats": {
+        "histogram": {
+          "16": 39
+        },
+        "total_batches": 39,
+        "total_frames": 624,
+        "average_batch_size": 16.0,
+        "max_batch_size": 16
+      },
+      "workload_counts": {
+        "candidates_evaluated": 598,
+        "clip_crops": 156,
+        "reid_crops": 156
+      },
+      "telemetry": {
+        "sample_count": 44,
+        "gpu_util_percent": {
+          "average": 21.02,
+          "peak": 99.0
+        },
+        "gpu_idle_percent_at_or_below_5": 36.36,
+        "gpu_memory_used_mb": {
+          "average": 2135.73,
+          "peak": 2288.0
+        },
+        "torch_allocated_mb": {
+          "average": 416.26,
+          "peak": 543.25
+        },
+        "decoder_queue_depth": {
+          "average": 220.41,
+          "peak": 256.0
+        },
+        "enrichment_queue_depth": {
+          "average": 16.75,
+          "peak": 66.0
+        },
+        "persistence_queue_depth": {
+          "average": 0.09,
+          "peak": 4.0
+        },
+        "lock_occupancy_percent": 70.45
+      }
+    },
+    {
+      "camera_count": 5,
+      "profile": "FORENSIC",
+      "wall_clock_sec": 16.766,
+      "frames_analyzed": 256,
+      "effective_fps": 15.269,
+      "detections_persisted": 519,
+      "detections_per_camera": {
+        "cam_0d8751aa": 94,
+        "cam_73af1c80": 94,
+        "cam_74440f03": 151,
+        "cam_8b577474": 86,
+        "cam_fa3bfa95": 94
+      },
+      "decoder_frames": {
+        "cam_74440f03": 213,
+        "cam_73af1c80": 177,
+        "cam_fa3bfa95": 177,
+        "cam_0d8751aa": 177,
+        "cam_8b577474": 173
+      },
+      "persistence_drained": true,
+      "stage_breakdown": {
+        "1_frame_acquisition": {
+          "calls": 614,
+          "total_ms": 8.84,
+          "avg_ms": 0.01,
+          "max_ms": 0.46,
+          "pct_runtime": 0.05
+        },
+        "2_batch_formation": {
+          "calls": 38,
+          "total_ms": 63.48,
+          "avg_ms": 1.67,
+          "max_ms": 4.36,
+          "pct_runtime": 0.38
+        },
+        "3_yolo_preprocessing": {
+          "calls": 38,
+          "total_ms": 1812.42,
+          "avg_ms": 47.7,
+          "max_ms": 71.15,
+          "pct_runtime": 10.81
+        },
+        "4_yolo_h2d": {
+          "calls": 32,
+          "total_ms": 1271.92,
+          "avg_ms": 39.75,
+          "max_ms": 213.21,
+          "pct_runtime": 7.59
+        },
+        "5_yolo_inference": {
+          "calls": 32,
+          "total_ms": 5418.43,
+          "avg_ms": 169.33,
+          "max_ms": 720.15,
+          "pct_runtime": 32.32
+        },
+        "6_yolo_output_materialization": {
+          "calls": 32,
+          "total_ms": 95.73,
+          "avg_ms": 2.99,
+          "max_ms": 48.87,
+          "pct_runtime": 0.57
+        },
+        "7_tracking": {
+          "calls": 32,
+          "total_ms": 193.39,
+          "avg_ms": 6.04,
+          "max_ms": 21.43,
+          "pct_runtime": 1.15
+        },
+        "8_crop_preparation": {
+          "calls": 32,
+          "total_ms": 21.79,
+          "avg_ms": 0.68,
+          "max_ms": 3.05,
+          "pct_runtime": 0.13
+        },
+        "9_clip_preprocessing": {
+          "calls": 29,
+          "total_ms": 344.45,
+          "avg_ms": 11.88,
+          "max_ms": 29.57,
+          "pct_runtime": 2.05
+        },
+        "10_clip_h2d": {
+          "calls": 29,
+          "total_ms": 29.64,
+          "avg_ms": 1.02,
+          "max_ms": 2.1,
+          "pct_runtime": 0.18
+        },
+        "11_clip_inference": {
+          "calls": 29,
+          "total_ms": 1023.77,
+          "avg_ms": 35.3,
+          "max_ms": 197.81,
+          "pct_runtime": 6.11
+        },
+        "12_clip_output_materialization": {
+          "calls": 29,
+          "total_ms": 41.84,
+          "avg_ms": 1.44,
+          "max_ms": 20.26,
+          "pct_runtime": 0.25
+        },
+        "13_reid_preprocessing": {
+          "calls": 29,
+          "total_ms": 339.6,
+          "avg_ms": 11.71,
+          "max_ms": 86.86,
+          "pct_runtime": 2.03
+        },
+        "14_reid_h2d": {
+          "calls": 29,
+          "total_ms": 22.52,
+          "avg_ms": 0.78,
+          "max_ms": 2.76,
+          "pct_runtime": 0.13
+        },
+        "15_reid_inference": {
+          "calls": 29,
+          "total_ms": 2421.61,
+          "avg_ms": 83.5,
+          "max_ms": 468.49,
+          "pct_runtime": 14.44
+        },
+        "16_reid_output_materialization": {
+          "calls": 29,
+          "total_ms": 10.09,
+          "avg_ms": 0.35,
+          "max_ms": 0.6,
+          "pct_runtime": 0.06
+        },
+        "17_scheduler_bookkeeping": {
+          "calls": 32,
+          "total_ms": 82.78,
+          "avg_ms": 2.59,
+          "max_ms": 8.53,
+          "pct_runtime": 0.49
+        }
+      },
+      "batch_stats": {
+        "histogram": {
+          "16": 38
+        },
+        "total_batches": 38,
+        "total_frames": 608,
+        "average_batch_size": 16.0,
+        "max_batch_size": 16
+      },
+      "workload_counts": {
+        "candidates_evaluated": 519,
+        "clip_crops": 153,
+        "reid_crops": 153
+      },
+      "telemetry": {
+        "sample_count": 42,
+        "gpu_util_percent": {
+          "average": 20.83,
+          "peak": 81.0
+        },
+        "gpu_idle_percent_at_or_below_5": 35.71,
+        "gpu_memory_used_mb": {
+          "average": 2696.9,
+          "peak": 2906.0
+        },
+        "torch_allocated_mb": {
+          "average": 734.67,
+          "peak": 957.56
+        },
+        "decoder_queue_depth": {
+          "average": 277.24,
+          "peak": 320.0
+        },
+        "enrichment_queue_depth": {
+          "average": 12.69,
+          "peak": 75.0
+        },
+        "persistence_queue_depth": {
+          "average": 0.05,
+          "peak": 2.0
+        },
+        "lock_occupancy_percent": 73.81
+      }
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+{
+  "job_id": "job_a0f9e2106088",
+  "total_wall_sec": 72.87,
+  "total_frames_analyzed": 519,
+  "effective_fps": 7.12,
+  "staggered_sources": [
+    {
+      "name": "Cam_1_30s",
+      "frames": 360,
+      "path": "C:\\Users\\siddu\\Downloads\\AICatch\\temp\\multicam_util_inside\\cam_1_30s.mp4"
+    },
+    {
+      "name": "Cam_2_60s",
+      "frames": 721,
+      "path": "C:\\Users\\siddu\\Downloads\\AICatch\\temp\\multicam_util_inside\\cam_2_60s.mp4"
+    },
+    {
+      "name": "Cam_3_90s",
+      "frames": 1081,
+      "path": "C:\\Users\\siddu\\Downloads\\AICatch\\temp\\multicam_util_inside\\cam_3_90s.mp4"
+    },
+    {
+      "name": "Cam_4_120s",
+      "frames": 1441,
+      "path": "C:\\Users\\siddu\\Downloads\\AICatch\\temp\\multicam_util_inside\\cam_4_120s.mp4"
+    },
+    {
+      "name": "Cam_5_150s",
+      "frames": 1801,
+      "path": "C:\\Users\\siddu\\Downloads\\AICatch\\temp\\multicam_util_inside\\cam_5_150s.mp4"
+    }
+  ],
+  "frames_per_camera": {
+    "cam_5228111d": 26,
+    "cam_7edefa96": 52,
+    "cam_27987b69": 95,
+    "cam_0f51337d": 143,
+    "cam_58c20c1c": 203
+  },
+  "batches_per_camera": {
+    "cam_5228111d": 7,
+    "cam_7edefa96": 14,
+    "cam_27987b69": 22,
+    "cam_0f51337d": 29,
+    "cam_58c20c1c": 32
+  },
+  "intervals": {
+    "5": {
+      "active_cameras": 5,
+      "duration_sec": 8.83,
+      "sample_count": 18,
+      "frames_processed": 80,
+      "effective_fps": 9.06,
+      "avg_gpu_util_percent": 19.39,
+      "min_gpu_util_percent": 0.0,
+      "low_gpu_util_percent_le_5": 44.44,
+      "avg_total_decoder_queue": 214.89,
+      "avg_scheduler_queue": 1.61,
+      "avg_batch_size": 16,
+      "avg_batch_latency_ms": 1621.93,
+      "avg_yolo_latency_ms": 1251.16,
+      "avg_clip_latency_ms": 175.67,
+      "avg_reid_prep_latency_ms": 176.27,
+      "avg_reid_gpu_latency_ms": 177.51,
+      "avg_db_write_latency_ms": 441.02,
+      "avg_process_cpu_percent": 332.42
+    },
+    "4": {
+      "active_cameras": 4,
+      "duration_sec": 2.85,
+      "sample_count": 8,
+      "frames_processed": 96,
+      "effective_fps": 33.74,
+      "avg_gpu_util_percent": 16.62,
+      "min_gpu_util_percent": 2.0,
+      "low_gpu_util_percent_le_5": 37.5,
+      "avg_total_decoder_queue": 202.75,
+      "avg_scheduler_queue": 0,
+      "avg_batch_size": 16,
+      "avg_batch_latency_ms": 468.71,
+      "avg_yolo_latency_ms": 318.43,
+      "avg_clip_latency_ms": 48.12,
+      "avg_reid_prep_latency_ms": 48.19,
+      "avg_reid_gpu_latency_ms": 83.14,
+      "avg_db_write_latency_ms": 276.0,
+      "avg_process_cpu_percent": 541.9
+    },
+    "3": {
+      "active_cameras": 3,
+      "duration_sec": 2.98,
+      "sample_count": 8,
+      "frames_processed": 128,
+      "effective_fps": 42.92,
+      "avg_gpu_util_percent": 17.88,
+      "min_gpu_util_percent": 0.0,
+      "low_gpu_util_percent_le_5": 37.5,
+      "avg_total_decoder_queue": 149.5,
+      "avg_scheduler_queue": 0,
+      "avg_batch_size": 16,
+      "avg_batch_latency_ms": 405.75,
+      "avg_yolo_latency_ms": 262.24,
+      "avg_clip_latency_ms": 79.47,
+      "avg_reid_prep_latency_ms": 79.53,
+      "avg_reid_gpu_latency_ms": 30.88,
+      "avg_db_write_latency_ms": 264.03,
+      "avg_process_cpu_percent": 599.09
+    },
+    "2": {
+      "active_cameras": 2,
+      "duration_sec": 2.74,
+      "sample_count": 7,
+      "frames_processed": 80,
+      "effective_fps": 29.18,
+      "avg_gpu_util_percent": 8.57,
+      "min_gpu_util_percent": 0.0,
+      "low_gpu_util_percent_le_5": 85.71,
+      "avg_total_decoder_queue": 92,
+      "avg_scheduler_queue": 0,
+      "avg_batch_size": 16,
+      "avg_batch_latency_ms": 459.46,
+      "avg_yolo_latency_ms": 368.09,
+      "avg_clip_latency_ms": 43.59,
+      "avg_reid_prep_latency_ms": 43.65,
+      "avg_reid_gpu_latency_ms": 58.92,
+      "avg_db_write_latency_ms": 325.12,
+      "avg_process_cpu_percent": 568.31
+    },
+    "1": {
+      "active_cameras": 1,
+      "duration_sec": 1.45,
+      "sample_count": 4,
+      "frames_processed": 64,
+      "effective_fps": 44.17,
+      "avg_gpu_util_percent": 33.5,
+      "min_gpu_util_percent": 0.0,
+      "low_gpu_util_percent_le_5": 25.0,
+      "avg_total_decoder_queue": 31,
+      "avg_scheduler_queue": 0,
+      "avg_batch_size": 16,
+      "avg_batch_latency_ms": 468.7,
+      "avg_yolo_latency_ms": 310.64,
+      "avg_clip_latency_ms": 54.22,
+      "avg_reid_prep_latency_ms": 54.29,
+      "avg_reid_gpu_latency_ms": 20.42,
+      "avg_db_write_latency_ms": 278.17,
+      "avg_process_cpu_percent": 592.98
+    }
+  },
+  "raw_samples_count": 155
+}

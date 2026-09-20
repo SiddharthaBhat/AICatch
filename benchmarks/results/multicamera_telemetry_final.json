@@ -1,0 +1,900 @@
+{
+  "video": "data\\media\\uploads\\inside.mp4",
+  "sample_interval_sec": 0.5,
+  "cases": [
+    {
+      "camera_count": 4,
+      "profile": "FORENSIC",
+      "wall_clock_sec": 10.765,
+      "frames_analyzed": 136,
+      "effective_fps": 12.634,
+      "detections_persisted": 312,
+      "detections_per_camera": {
+        "cam_16121030": 79,
+        "cam_6cb08a0f": 80,
+        "cam_70b3b62a": 79,
+        "cam_d38d8a74": 74
+      },
+      "decoder_frames": {
+        "cam_6cb08a0f": 161,
+        "cam_70b3b62a": 160,
+        "cam_16121030": 160,
+        "cam_d38d8a74": 155
+      },
+      "persistence_drained": true,
+      "telemetry": {
+        "sample_count": 16,
+        "gpu_util_percent": {
+          "average": 19.31,
+          "peak": 46.0
+        },
+        "gpu_idle_percent_at_or_below_5": 0.0,
+        "gpu_memory_used_mb": {
+          "average": 1951.88,
+          "peak": 2307.0
+        },
+        "gpu_temperature_c": {
+          "average": 45.69,
+          "peak": 47.0
+        },
+        "gpu_power_w": {
+          "average": 15.13,
+          "peak": 20.85
+        },
+        "gpu_clock_mhz": {
+          "average": 1445.44,
+          "peak": 1965.0
+        },
+        "process_cpu_percent": {
+          "average": 648.38,
+          "peak": 999.6
+        },
+        "torch_allocated_mb": {
+          "average": 407.5,
+          "peak": 575.38
+        },
+        "torch_reserved_mb": {
+          "average": 1037.38,
+          "peak": 1390.0
+        },
+        "decoder_queue_depth": {
+          "average": 220.25,
+          "peak": 256.0
+        },
+        "enrichment_queue_depth": {
+          "average": 14.5,
+          "peak": 67.0
+        },
+        "persistence_queue_depth": {
+          "average": 0.0,
+          "peak": 0.0
+        },
+        "gpu_path_busy_percent": 81.25
+      },
+      "samples": [
+        {
+          "timestamp": 1789740691.184,
+          "gpu_util_percent": 8.0,
+          "gpu_memory_used_mb": 1414.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 12.94,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 329.49,
+          "torch_reserved_mb": 520.0,
+          "process_cpu_percent": 403.2,
+          "decoder_queue_depth": 0,
+          "decoder_queue_depths": {},
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740692.038,
+          "gpu_util_percent": 10.0,
+          "gpu_memory_used_mb": 1418.0,
+          "gpu_temp_c": 44.0,
+          "gpu_power_w": 12.87,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 329.48,
+          "torch_reserved_mb": 520.0,
+          "process_cpu_percent": 147.2,
+          "decoder_queue_depth": 196,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 62,
+            "cam_d38d8a74": 6
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740692.643,
+          "gpu_util_percent": 46.0,
+          "gpu_memory_used_mb": 1472.0,
+          "gpu_temp_c": 44.0,
+          "gpu_power_w": 11.72,
+          "gpu_clock_mhz": 802.0,
+          "torch_allocated_mb": 365.82,
+          "torch_reserved_mb": 568.0,
+          "process_cpu_percent": 113.3,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740693.26,
+          "gpu_util_percent": 15.0,
+          "gpu_memory_used_mb": 1524.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 12.16,
+          "gpu_clock_mhz": 1440.0,
+          "torch_allocated_mb": 368.44,
+          "torch_reserved_mb": 604.0,
+          "process_cpu_percent": 242.5,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740694.373,
+          "gpu_util_percent": 8.0,
+          "gpu_memory_used_mb": 1524.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 12.09,
+          "gpu_clock_mhz": 1440.0,
+          "torch_allocated_mb": 372.5,
+          "torch_reserved_mb": 604.0,
+          "process_cpu_percent": 481.4,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740694.991,
+          "gpu_util_percent": 28.0,
+          "gpu_memory_used_mb": 1588.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 10.47,
+          "gpu_clock_mhz": 675.0,
+          "torch_allocated_mb": 396.87,
+          "torch_reserved_mb": 668.0,
+          "process_cpu_percent": 710.0,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740695.598,
+          "gpu_util_percent": 42.0,
+          "gpu_memory_used_mb": 1770.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 10.54,
+          "gpu_clock_mhz": 982.0,
+          "torch_allocated_mb": 456.44,
+          "torch_reserved_mb": 850.0,
+          "process_cpu_percent": 999.6,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740696.192,
+          "gpu_util_percent": 16.0,
+          "gpu_memory_used_mb": 2066.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 12.67,
+          "gpu_clock_mhz": 1080.0,
+          "torch_allocated_mb": 497.58,
+          "torch_reserved_mb": 1146.0,
+          "process_cpu_percent": 751.7,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740696.951,
+          "gpu_util_percent": 34.0,
+          "gpu_memory_used_mb": 2306.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 14.57,
+          "gpu_clock_mhz": 1537.0,
+          "torch_allocated_mb": 500.5,
+          "torch_reserved_mb": 1388.0,
+          "process_cpu_percent": 702.1,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 37,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740697.601,
+          "gpu_util_percent": 22.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 16.5,
+          "gpu_clock_mhz": 1537.0,
+          "torch_allocated_mb": 575.38,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 900.3,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 45,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740698.22,
+          "gpu_util_percent": 16.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 17.74,
+          "gpu_clock_mhz": 1657.0,
+          "torch_allocated_mb": 363.52,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 850.4,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 21,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740699.013,
+          "gpu_util_percent": 18.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 19.27,
+          "gpu_clock_mhz": 1657.0,
+          "torch_allocated_mb": 515.94,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 865.7,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 67,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740699.634,
+          "gpu_util_percent": 9.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 19.77,
+          "gpu_clock_mhz": 1785.0,
+          "torch_allocated_mb": 361.25,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 982.5,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 42,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740700.265,
+          "gpu_util_percent": 7.0,
+          "gpu_memory_used_mb": 2306.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 18.85,
+          "gpu_clock_mhz": 1785.0,
+          "torch_allocated_mb": 364.29,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 680.0,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 19,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740701.071,
+          "gpu_util_percent": 17.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 19.09,
+          "gpu_clock_mhz": 1785.0,
+          "torch_allocated_mb": 361.25,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 962.9,
+          "decoder_queue_depth": 256,
+          "decoder_queue_depths": {
+            "cam_6cb08a0f": 64,
+            "cam_70b3b62a": 64,
+            "cam_16121030": 64,
+            "cam_d38d8a74": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 1,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740701.656,
+          "gpu_util_percent": 13.0,
+          "gpu_memory_used_mb": 2307.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 20.85,
+          "gpu_clock_mhz": 1965.0,
+          "torch_allocated_mb": 361.25,
+          "torch_reserved_mb": 1390.0,
+          "process_cpu_percent": 581.2,
+          "decoder_queue_depth": 0,
+          "decoder_queue_depths": {},
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        }
+      ]
+    },
+    {
+      "camera_count": 5,
+      "profile": "FORENSIC",
+      "wall_clock_sec": 11.672,
+      "frames_analyzed": 130,
+      "effective_fps": 11.138,
+      "detections_persisted": 340,
+      "detections_per_camera": {
+        "cam_982f6b16": 68,
+        "cam_987f0ce2": 68,
+        "cam_9c764907": 68,
+        "cam_d1f3a7c3": 68,
+        "cam_d373301d": 68
+      },
+      "decoder_frames": {
+        "cam_982f6b16": 139,
+        "cam_d373301d": 120,
+        "cam_d1f3a7c3": 123,
+        "cam_987f0ce2": 122,
+        "cam_9c764907": 118
+      },
+      "persistence_drained": true,
+      "telemetry": {
+        "sample_count": 17,
+        "gpu_util_percent": {
+          "average": 23.18,
+          "peak": 65.0
+        },
+        "gpu_idle_percent_at_or_below_5": 0.0,
+        "gpu_memory_used_mb": {
+          "average": 2039.24,
+          "peak": 2428.0
+        },
+        "gpu_temperature_c": {
+          "average": 46.94,
+          "peak": 48.0
+        },
+        "gpu_power_w": {
+          "average": 15.55,
+          "peak": 20.4
+        },
+        "gpu_clock_mhz": {
+          "average": 1462.82,
+          "peak": 1860.0
+        },
+        "process_cpu_percent": {
+          "average": 643.59,
+          "peak": 910.0
+        },
+        "torch_allocated_mb": {
+          "average": 386.73,
+          "peak": 610.94
+        },
+        "torch_reserved_mb": {
+          "average": 1127.76,
+          "peak": 1516.0
+        },
+        "decoder_queue_depth": {
+          "average": 255.47,
+          "peak": 320.0
+        },
+        "enrichment_queue_depth": {
+          "average": 23.59,
+          "peak": 78.0
+        },
+        "persistence_queue_depth": {
+          "average": 0.06,
+          "peak": 1.0
+        },
+        "gpu_path_busy_percent": 64.71
+      },
+      "samples": [
+        {
+          "timestamp": 1789740712.705,
+          "gpu_util_percent": 36.0,
+          "gpu_memory_used_mb": 1451.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 6.31,
+          "gpu_clock_mhz": 307.0,
+          "torch_allocated_mb": 361.74,
+          "torch_reserved_mb": 534.0,
+          "process_cpu_percent": 112.5,
+          "decoder_queue_depth": 0,
+          "decoder_queue_depths": {},
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740714.07,
+          "gpu_util_percent": 20.0,
+          "gpu_memory_used_mb": 1451.0,
+          "gpu_temp_c": 45.0,
+          "gpu_power_w": 6.29,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 362.6,
+          "torch_reserved_mb": 534.0,
+          "process_cpu_percent": 126.1,
+          "decoder_queue_depth": 250,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 58,
+            "cam_9c764907": 0
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740714.687,
+          "gpu_util_percent": 26.0,
+          "gpu_memory_used_mb": 1534.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 12.08,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 364.3,
+          "torch_reserved_mb": 630.0,
+          "process_cpu_percent": 246.3,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740715.311,
+          "gpu_util_percent": 20.0,
+          "gpu_memory_used_mb": 1534.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 15.05,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 362.84,
+          "torch_reserved_mb": 630.0,
+          "process_cpu_percent": 752.5,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740716.096,
+          "gpu_util_percent": 18.0,
+          "gpu_memory_used_mb": 1541.0,
+          "gpu_temp_c": 46.0,
+          "gpu_power_w": 14.59,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 404.16,
+          "torch_reserved_mb": 630.0,
+          "process_cpu_percent": 664.6,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 4,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740716.726,
+          "gpu_util_percent": 32.0,
+          "gpu_memory_used_mb": 1789.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 16.22,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 878.0,
+          "process_cpu_percent": 910.0,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 11,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740717.355,
+          "gpu_util_percent": 28.0,
+          "gpu_memory_used_mb": 1789.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 16.61,
+          "gpu_clock_mhz": 1500.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 878.0,
+          "process_cpu_percent": 805.0,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 4,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740717.992,
+          "gpu_util_percent": 21.0,
+          "gpu_memory_used_mb": 1972.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 17.36,
+          "gpu_clock_mhz": 1695.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1060.0,
+          "process_cpu_percent": 794.7,
+          "decoder_queue_depth": 318,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 62,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 30,
+          "persistence_queue_depth": 1,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740718.639,
+          "gpu_util_percent": 37.0,
+          "gpu_memory_used_mb": 2184.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 19.66,
+          "gpu_clock_mhz": 1695.0,
+          "torch_allocated_mb": 367.87,
+          "torch_reserved_mb": 1272.0,
+          "process_cpu_percent": 798.3,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740719.337,
+          "gpu_util_percent": 17.0,
+          "gpu_memory_used_mb": 2426.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 20.4,
+          "gpu_clock_mhz": 1695.0,
+          "torch_allocated_mb": 610.94,
+          "torch_reserved_mb": 1514.0,
+          "process_cpu_percent": 763.5,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 26,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740719.989,
+          "gpu_util_percent": 9.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 17.62,
+          "gpu_clock_mhz": 1327.0,
+          "torch_allocated_mb": 478.74,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 783.6,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 34,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740720.652,
+          "gpu_util_percent": 30.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 14.09,
+          "gpu_clock_mhz": 1207.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 771.7,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 57,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740721.392,
+          "gpu_util_percent": 9.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 15.0,
+          "gpu_clock_mhz": 1605.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 819.6,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 67,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740722.056,
+          "gpu_util_percent": 65.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 19.89,
+          "gpu_clock_mhz": 1860.0,
+          "torch_allocated_mb": 363.24,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 785.9,
+          "decoder_queue_depth": 320,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 64,
+            "cam_d373301d": 64,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": true,
+          "enrichment_queue_depth": 71,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740722.696,
+          "gpu_util_percent": 8.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 19.92,
+          "gpu_clock_mhz": 1860.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 736.2,
+          "decoder_queue_depth": 255,
+          "decoder_queue_depths": {
+            "cam_982f6b16": 0,
+            "cam_d373301d": 63,
+            "cam_d1f3a7c3": 64,
+            "cam_987f0ce2": 64,
+            "cam_9c764907": 64
+          },
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 78,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740723.491,
+          "gpu_util_percent": 8.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 48.0,
+          "gpu_power_w": 18.33,
+          "gpu_clock_mhz": 1860.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 746.9,
+          "decoder_queue_depth": 0,
+          "decoder_queue_depths": {},
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 19,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        },
+        {
+          "timestamp": 1789740724.235,
+          "gpu_util_percent": 10.0,
+          "gpu_memory_used_mb": 2428.0,
+          "gpu_temp_c": 47.0,
+          "gpu_power_w": 14.93,
+          "gpu_clock_mhz": 757.0,
+          "torch_allocated_mb": 362.25,
+          "torch_reserved_mb": 1516.0,
+          "process_cpu_percent": 323.6,
+          "decoder_queue_depth": 0,
+          "decoder_queue_depths": {},
+          "scheduler_queue_depth": 0,
+          "gpu_path_busy": false,
+          "enrichment_queue_depth": 0,
+          "persistence_queue_depth": 0,
+          "media_queue_depth": null
+        }
+      ]
+    }
+  ]
+}

@@ -47,7 +47,7 @@ journey_engine = JourneyEngine(sqlite_db, vector_db)
 matcher = ActiveQueryMatcher()
 dispatcher = ResultDispatcher(sqlite_db, vector_db, matcher)
 job_manager = JobManager(sqlite_db)
-gpu_scheduler = GPUScheduler(job_manager, media_storage, dispatcher)
+gpu_scheduler = GPUScheduler(job_manager, media_storage, dispatcher) if GPUScheduler is not None else None
 
 # ==============================================================================
 # 2. FastAPI Application Setup

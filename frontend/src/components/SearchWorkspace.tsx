@@ -636,17 +636,17 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                         <span style={{ fontSize: "9px", fontWeight: "700", padding: "2px 6px", borderRadius: "4px", backgroundColor: "rgba(0,0,0,0.7)", color: "var(--color-accent)", textTransform: "uppercase" }}>
                           {res.entity_type || "OBJECT"}
                         </span>
-                        {res.match_type && (
+                        {(res.source_type || res.match_type) && (
                           <span style={{
                             fontSize: "9px",
                             fontWeight: "700",
                             padding: "2px 6px",
                             borderRadius: "4px",
-                            backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)",
+                            backgroundColor: (res.source_type === "scene" || res.match_type === "scene") ? "rgba(59, 130, 246, 0.85)" : ((res.source_type === "region" || res.match_type === "region") ? "rgba(245, 158, 11, 0.85)" : "rgba(16, 185, 129, 0.85)"),
                             color: "#ffffff",
                             textTransform: "uppercase"
                           }}>
-                            {res.match_type === "scene" ? "Scene Match" : "Object Match"}
+                            {(res.source_type === "scene" || res.match_type === "scene") ? "Scene Match" : ((res.source_type === "region" || res.match_type === "region") ? "Region Match" : "Object Match")}
                           </span>
                         )}
                       </div>
@@ -771,11 +771,14 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               <span style={{ color: "var(--text-muted)" }}>Camera:</span>
               <strong style={{ color: "var(--text-primary)" }}>{getCameraDisplayName(selectedResult.camera_id)}</strong>
             </div>
-            {selectedResult.match_type && (
+            {(selectedResult.source_type || selectedResult.match_type) && (
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-muted)" }}>Match Type:</span>
-                <strong style={{ color: selectedResult.match_type === "scene" ? "#3b82f6" : "var(--color-accent)", textTransform: "capitalize" }}>
-                  {selectedResult.match_type === "scene" ? "Scene Keyframe" : "Object Crop"}
+                <span style={{ color: "var(--text-muted)" }}>Source Type:</span>
+                <strong style={{
+                  color: (selectedResult.source_type === "scene" || selectedResult.match_type === "scene") ? "#3b82f6" : ((selectedResult.source_type === "region" || selectedResult.match_type === "region") ? "#f59e0b" : "var(--color-success)"),
+                  textTransform: "capitalize"
+                }}>
+                  {(selectedResult.source_type === "scene" || selectedResult.match_type === "scene") ? "Scene Keyframe" : ((selectedResult.source_type === "region" || selectedResult.match_type === "region") ? "Spatial Region Tile" : "Object Detection Crop")}
                 </strong>
               </div>
             )}

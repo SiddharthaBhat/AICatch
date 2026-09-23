@@ -16,21 +16,21 @@ async function safeFetch(url: string, options?: RequestInit): Promise<Response> 
 export const getMediaUrl = (path: string | undefined): string => {
   if (!path) return "";
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  
+
   const normalized = path.replace(/\\/g, "/");
-  
+
   // 1. If path contains /media/ (standard crops, thumbnails, clips, uploads)
   const mediaIdx = normalized.indexOf("/media/");
   if (mediaIdx !== -1) {
     return `${API_BASE_URL}${normalized.substring(mediaIdx)}`;
   }
-  
+
   // 2. If it's a video file or external path from local storage
   const isVideo = /\.(mp4|avi|mov|mkv|webm|m4v)$/i.test(normalized);
   if (isVideo) {
     return `${API_BASE_URL}/api/video/stream?path=${encodeURIComponent(normalized)}`;
   }
-  
+
   return `${API_BASE_URL}/media/${normalized.split("/").pop()}`;
 };
 
@@ -196,6 +196,7 @@ export const apiService = {
     queryText?: string;
     queryFile?: File;
     savedPersonId?: string;
+    qcategory?: "person" | "object" | "scene" | "region" | "auto";
     cameraId?: string;
     objectType?: string;
     jobId?: string;
@@ -206,6 +207,7 @@ export const apiService = {
     if (params.queryText) formData.append("query_text", params.queryText);
     if (params.queryFile) formData.append("query_file", params.queryFile);
     if (params.savedPersonId) formData.append("saved_person_id", params.savedPersonId);
+    if (params.qcategory) formData.append("qcategory", params.qcategory);
     if (params.cameraId) formData.append("camera_id", params.cameraId);
     if (params.objectType) formData.append("object_type", params.objectType);
     if (params.jobId) formData.append("job_id", params.jobId);

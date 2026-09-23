@@ -101,14 +101,14 @@ async def shutdown_event():
     gpu_scheduler.stop_scheduler()
     if gpu_scheduler.is_alive():
         gpu_scheduler.join(timeout=3.0)
-        
+
     LOGGER.info("Stopping Result Dispatcher...")
     dispatcher.stop_dispatcher()
-    
+
     LOGGER.info("Stopping active camera streams...")
     for job_id in list(job_manager.active_jobs.keys()):
         job_manager.cleanup_job_resources(job_id)
-        
+
     LOGGER.info("Flushing pending media storage writes...")
     media_storage.stop()
 
@@ -193,7 +193,7 @@ def add_job_camera(job_id: str, cam_in: CameraAddIn):
         job_record = sqlite_db.get_job(job_id)
         if not job_record:
             raise HTTPException(status_code=404, detail="Job not found.")
-        
+
         from pipeline.job_manager import get_file_sha256
         cam_id = f"cam_{uuid.uuid4().hex[:8]}"
         checksum = get_file_sha256(cam_in.path) if cam_in.path and Path(cam_in.path).exists() else None
@@ -226,12 +226,12 @@ def update_job_camera(job_id: str, camera_id: str, cam_update: CameraUpdateIn):
         job_record = sqlite_db.get_job(job_id)
         if not job_record:
             raise HTTPException(status_code=404, detail="Job not found.")
-        
+
         cameras = sqlite_db.get_cameras_by_job(job_id)
         cam = next((c for c in cameras if c["id"] == camera_id), None)
         if not cam:
             raise HTTPException(status_code=404, detail="Camera not found.")
-        
+
         from pipeline.job_manager import get_file_sha256
         new_path = cam_update.path if cam_update.path is not None else cam["source_path"]
         new_name = cam_update.name if cam_update.name is not None else cam["name"]
@@ -310,37 +310,37 @@ def reconcile_investigations():
             "dangling_chroma_vectors": [],
             "dangling_crop_folders": []
         }
-        
+
         all_jobs = sqlite_db.get_jobs()
         report["total_jobs_in_sqlite"] = len(all_jobs)
         known_job_ids = set()
-        
+
         with sqlite_db.connection() as conn:
             conn.row_factory = sqlite3.Row
             for j in all_jobs:
                 jid = j["id"]
                 known_job_ids.add(jid)
                 status = j["status"]
-                
+
                 cur_t = conn.execute("SELECT count(*) as count FROM tracks WHERE job_id = ?", (jid,))
                 track_count = cur_t.fetchone()["count"]
-                
+
                 cur_d = conn.execute("SELECT count(*) as count FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?", (jid,))
                 det_count = cur_d.fetchone()["count"]
-                
+
                 # Check ChromaDB counts
                 vis_ids = vector_db.visual_coll.get(where={"job_id": jid})["ids"]
                 reid_ids = vector_db.reid_coll.get(where={"job_id": jid})["ids"]
                 face_ids = vector_db.face_coll.get(where={"job_id": jid})["ids"]
-                
+
                 vis_count = len(vis_ids)
                 reid_count = len(reid_ids)
                 face_count = len(face_ids)
-                
+
                 # Check crops on disk
                 crop_dir = media_storage.get_crop_dir("person") / jid
                 has_crops_on_disk = crop_dir.exists() and any(crop_dir.iterdir()) if crop_dir.exists() else False
-                
+
                 # Detect anomalies
                 job_anomalies = []
                 if status.upper() == "INDEXED" and vis_count == 0:
@@ -351,7 +351,7 @@ def reconcile_investigations():
                     job_anomalies.append("ORPHANED_FAILED_RUN: Test or pipeline run failed with 0 metadata")
                 if status.upper() == "DELETE_FAILED":
                     job_anomalies.append(f"DELETE_FAILED: Investigation deletion previously failed: {j.get('error_msg')}")
-                    
+
                 job_info = {
                     "job_id": jid,
                     "name": j["name"],
@@ -362,12 +362,12 @@ def reconcile_investigations():
                     "chroma_vectors": {"visual": vis_count, "reid": reid_count, "face": face_count},
                     "has_crops_on_disk": has_crops_on_disk
                 }
-                
+
                 if job_anomalies:
                     report["anomalies"].append({**job_info, "issues": job_anomalies})
                 else:
                     report["healthy_jobs"].append(job_info)
-                    
+
         # Check for dangling ChromaDB vectors not belonging to any known SQLite job
         all_vis_metas = vector_db.visual_coll.get(include=["metadatas"])
         if all_vis_metas and all_vis_metas.get("metadatas"):
@@ -377,7 +377,7 @@ def reconcile_investigations():
                 if cj_id and cj_id not in known_job_ids:
                     orphaned_chroma_jobs.add(cj_id)
             report["dangling_chroma_vectors"] = list(orphaned_chroma_jobs)
-            
+
         # Check for dangling crop folders on disk
         for crop_type in ["person", "vehicle", "face", "plate"]:
             cdir = media_storage.get_crop_dir(crop_type)
@@ -385,7 +385,7 @@ def reconcile_investigations():
                 for p in cdir.iterdir():
                     if p.is_dir() and p.name not in known_job_ids:
                         report["dangling_crop_folders"].append(str(p).replace("\\", "/"))
-                        
+
         return report
     except Exception as e:
         LOGGER.error(f"Failed to reconcile investigations: {e}", exc_info=True)
@@ -398,7 +398,7 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
         actions_taken = []
         all_jobs = sqlite_db.get_jobs()
         known_job_ids = set()
-        
+
         jobs_to_purge = []
         with sqlite_db.connection() as conn:
             conn.row_factory = sqlite3.Row
@@ -406,11 +406,11 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
                 jid = j["id"]
                 known_job_ids.add(jid)
                 status = j["status"]
-                
+
                 # Check ChromaDB visual vectors
                 vis_ids = vector_db.visual_coll.get(where={"job_id": jid})["ids"]
                 vis_count = len(vis_ids)
-                
+
                 # Fix false INDEXED status
                 if status.upper() == "INDEXED" and vis_count == 0:
                     conn.execute(
@@ -418,13 +418,13 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
                         (jid,)
                     )
                     actions_taken.append(f"Fixed status of {jid} from INDEXED to failed (0 Chroma vectors).")
-                    
+
                 # Optionally check for failed zero-data runs
                 if purge_failed and status.lower() == "failed":
                     cur_t = conn.execute("SELECT count(*) as count FROM tracks WHERE job_id = ?", (jid,))
                     if cur_t.fetchone()["count"] == 0:
                         jobs_to_purge.append(jid)
-                        
+
         if purge_failed and jobs_to_purge:
             for jid in jobs_to_purge:
                 try:
@@ -433,7 +433,7 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
                 except Exception as p_err:
                     actions_taken.append(f"Failed to purge {jid}: {p_err}")
 
-                        
+
         # Purge dangling Chroma vectors
         if purge_orphaned_storage:
             all_vis_metas = vector_db.visual_coll.get(include=["metadatas"])
@@ -443,7 +443,7 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
                     if cj_id and cj_id not in known_job_ids:
                         vector_db.delete_by_job(cj_id)
                         actions_taken.append(f"Deleted dangling vectors for unknown job {cj_id}.")
-                        
+
             # Purge dangling crop folders
             for crop_type in ["person", "vehicle", "face", "plate"]:
                 cdir = media_storage.get_crop_dir(crop_type)
@@ -452,7 +452,7 @@ def fix_investigation_drift(purge_failed: bool = False, purge_orphaned_storage: 
                         if p.is_dir() and p.name not in known_job_ids:
                             shutil.rmtree(p)
                             actions_taken.append(f"Deleted dangling disk crop folder {p.name}.")
-                            
+
         return {"status": "reconciled", "actions_count": len(actions_taken), "actions": actions_taken}
     except Exception as e:
         LOGGER.error(f"Failed to fix investigation drift: {e}", exc_info=True)
@@ -484,13 +484,13 @@ def delete_job(job_id: str):
                 dispatcher.job_stats.pop(job_id, None)
             except Exception:
                 pass
-                   
+
         # 2. Delete vectors from Vector DB across visual, reid, face, scene, and region collections
         try:
             vector_db.delete_by_job(job_id)
         except Exception as ve:
             LOGGER.warning(f"Vector DB cleanup warning for {job_id}: {ve}")
-        
+
         # 3. Delete media folders from disk (crops, thumbnails, clips, keyframes, regions) safely
         for crop_type in ["person", "vehicle", "face", "plate"]:
             try:
@@ -500,7 +500,7 @@ def delete_job(job_id: str):
                     shutil.rmtree(job_crop_path, ignore_errors=True)
             except Exception as me:
                 LOGGER.warning(f"Failed to delete crop dir for {crop_type}: {me}")
-                   
+
         from config import THUMBNAILS_DIR, CLIPS_DIR, KEYFRAMES_DIR, REGIONS_DIR
         for folder in [THUMBNAILS_DIR / job_id, CLIPS_DIR / job_id, KEYFRAMES_DIR / job_id, REGIONS_DIR / job_id]:
             try:
@@ -508,11 +508,11 @@ def delete_job(job_id: str):
                     shutil.rmtree(folder, ignore_errors=True)
             except Exception as fe:
                 LOGGER.warning(f"Failed to delete media folder {folder}: {fe}")
-                
+
         # 4. Atomic cascade delete across all SQLite tables
         with sqlite_db.connection() as conn:
             conn.execute("PRAGMA foreign_keys = ON;")
-            
+
             # Delete evidence items & folders
             conn.execute("DELETE FROM notes WHERE parent_type = 'job' AND parent_id = ?", (job_id,))
             conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id IN (SELECT id FROM folders WHERE job_id = ?)", (job_id,))
@@ -521,22 +521,22 @@ def delete_job(job_id: str):
             conn.execute("DELETE FROM folder_items WHERE item_type = 'track' AND item_id IN (SELECT id FROM tracks WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM folder_items WHERE item_type = 'detection' AND item_id IN (SELECT d.id FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?)", (job_id,))
             conn.execute("DELETE FROM folders WHERE job_id = ?", (job_id,))
-            
+
             # Delete saved persons & active query alerts
             conn.execute("DELETE FROM saved_persons WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM active_queries WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM journey_events WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM perf_stats WHERE job_id = ?", (job_id,))
-            
+
             # Delete detections, tracks, frames, cameras
             conn.execute("DELETE FROM detections WHERE track_id IN (SELECT id FROM tracks WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM tracks WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM frames WHERE camera_id IN (SELECT id FROM cameras WHERE job_id = ?)", (job_id,))
             conn.execute("DELETE FROM cameras WHERE job_id = ?", (job_id,))
-            
+
             # Delete primary job record
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-               
+
         LOGGER.info(f"Investigation {job_id} deleted successfully.")
         return {"job_id": job_id, "status": "deleted"}
     except HTTPException:
@@ -552,13 +552,13 @@ async def upload_video_file(file: UploadFile = File(...)):
         safe_filename = "".join(c for c in file.filename if c.isalnum() or c in (".", "_", "-")).strip()
         if not safe_filename:
             safe_filename = f"upload_{int(time.time())}.mp4"
-            
+
         save_path = UPLOAD_DIR / safe_filename
         LOGGER.info(f"Saving uploaded video file to: {save_path}")
-        
+
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         return {"filename": safe_filename, "path": str(save_path).replace("\\", "/")}
     except Exception as e:
         LOGGER.error(f"Failed to save video upload: {e}")
@@ -588,7 +588,7 @@ async def stream_video(request: Request, path: str = Query(...)):
         clean_path = path.replace("\\", "/").strip()
 
         video_path = Path(clean_path)
-        
+
         # If relative or filename only, check inside MEDIA_DIR / uploads / clips
         if not video_path.is_absolute() or not video_path.exists():
             if (MEDIA_DIR / clean_path).exists():
@@ -683,7 +683,7 @@ def get_job_diagnostics(job_id: str):
     job_record = sqlite_db.get_job(job_id)
     if not job_record:
         raise HTTPException(status_code=404, detail="Job not found.")
-        
+
     diag_str = job_record.get("diagnostics")
     parsed_diag = {}
     if diag_str:
@@ -691,7 +691,7 @@ def get_job_diagnostics(job_id: str):
             parsed_diag = json.loads(diag_str)
         except Exception:
             parsed_diag = {"raw": diag_str}
-            
+
     stats = {}
     if hasattr(dispatcher, "job_stats") and job_id in dispatcher.job_stats:
         stats = dispatcher.job_stats[job_id]
@@ -787,6 +787,7 @@ async def execute_search(
     query_text: Optional[str] = Form(None),
     query_file: Optional[UploadFile] = File(None),
     saved_person_id: Optional[str] = Form(None),
+    qcategory: Optional[str] = Form(None),  # "person" | "object" | "scene" | "region" | None
     camera_id: Optional[str] = Form(None),
     object_type: Optional[str] = Form(None),
     job_id: Optional[str] = Form(None),
@@ -817,144 +818,256 @@ async def execute_search(
         filters["entity_type"] = normalized_type
     if not strict_gate and not SEARCH_DEBUG:
         raise HTTPException(status_code=403, detail="Diagnostic gate bypass requires AICATCH_SEARCH_DEBUG=true.")
-        
+
     qtype = qtype.lower().strip()
-    
+
     try:
         matches = []
         # 1. Text Query Search (multimodal CLIP text search)
         if qtype == "text" and query_text:
             emb = gpu_scheduler.embed_text(query_text)
             matches = search_layer.search_by_text(emb, filters, top_k, query_text=query_text)
-            
-        # 2. Image Query Search (CLIP visual matching with internal face re-ranking fallback)
+
+        # 2. Image Query Search (CLIP visual matching with intent-aware routing & face fallback)
         elif qtype in ["image", "face"] and query_file:
             img = ImageOps.exif_transpose(Image.open(query_file.file)).convert("RGB")
             if img.width <= 0 or img.height <= 0:
                 raise HTTPException(status_code=400, detail="The uploaded image has invalid dimensions.")
-            # Detect entity type and bounding box of the query image for collection-scoped search
+
+            # Validate explicit query intent category if provided
+            normalized_qcat = None
+            if qcategory:
+                normalized_qcat = qcategory.strip().lower()
+                if normalized_qcat not in ["person", "object", "scene", "region"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid qcategory '{qcategory}'. Must be one of: person, object, scene, region."
+                    )
+
             entity_type = None
             query_crop = img
             emb_reid = None
-            try:
-                cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                with gpu_scheduler.gpu_lock:
-                    yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
-                if yolo_results and len(yolo_results[0].boxes) > 0:
-                    # Filter boxes strictly for valid target classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck
-                    target_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [0, 2, 3, 5, 7]]
-                    if target_boxes:
-                        best_box = max(target_boxes, key=lambda b: float(b.conf[0]))
-                        cls_idx = int(best_box.cls[0])
-                        if cls_idx == 0:
-                            entity_type = "person"
-                        elif cls_idx in [2, 3, 5, 7]:
-                            entity_type = "vehicle"
-                        
-                        # Only crop if the target object is a sub-region (occupies < 80% of image area)
-                        # If the image is already a tight crop, avoid degrading it
-                        bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
-                        box_area = (bx2 - bx1) * (by2 - by1)
-                        img_area = float(img.width * img.height)
-                        if box_area < 0.80 * img_area:
-                            w, h = img.width, img.height
-                            pad_x = (bx2 - bx1) * 0.05
-                            pad_y = (by2 - by1) * 0.05
-                            cx1 = max(0, int(bx1 - pad_x))
-                            cy1 = max(0, int(by1 - pad_y))
-                            cx2 = min(w, int(bx2 + pad_x))
-                            cy2 = min(h, int(by2 + pad_y))
-                            if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
-                                query_crop = img.crop((cx1, cy1, cx2, cy2))
-            except Exception as yolo_err:
-                LOGGER.debug(f"Failed to detect query image entity type: {yolo_err}")
-                query_crop = img
-                
-            emb = gpu_scheduler.embed_image(query_crop)
+            emb_face = None
+            face_status = "NO_FACE"
+            intent_source = "explicit_intent" if normalized_qcat else "automatic_classification"
 
-            # If person entity, extract Re-ID embedding from the query crop
-            if entity_type == "person":
+            if normalized_qcat == "person":
+                # Explicit Person Intent: YOLO refinement for person box, extract CLIP + Re-ID + Face
+                entity_type = "person"
+                try:
+                    cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                    with gpu_scheduler.gpu_lock:
+                        yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
+                    if yolo_results and len(yolo_results[0].boxes) > 0:
+                        person_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) == 0]
+                        if person_boxes:
+                            best_box = max(person_boxes, key=lambda b: float(b.conf[0]))
+                            bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
+                            box_area = (bx2 - bx1) * (by2 - by1)
+                            img_area = float(img.width * img.height)
+                            if box_area < 0.80 * img_area:
+                                w, h = img.width, img.height
+                                pad_x = (bx2 - bx1) * 0.05
+                                pad_y = (by2 - by1) * 0.05
+                                cx1 = max(0, int(bx1 - pad_x))
+                                cy1 = max(0, int(by1 - pad_y))
+                                cx2 = min(w, int(bx2 + pad_x))
+                                cy2 = min(h, int(by2 + pad_y))
+                                if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
+                                    query_crop = img.crop((cx1, cy1, cx2, cy2))
+                except Exception as yolo_err:
+                    LOGGER.debug(f"Person query crop refinement note: {yolo_err}")
+                    query_crop = img
+
+                emb = gpu_scheduler.embed_image(query_crop)
                 try:
                     emb_reid = gpu_scheduler.embed_reid(query_crop)
                 except Exception as re_err:
                     LOGGER.debug(f"Query Re-ID extraction note: {re_err}")
                     emb_reid = None
 
-            # Attempt face detection internally on query image
-            try:
-                await query_file.seek(0)
-                face_img = Image.open(query_file.file)
-                res_face = gpu_scheduler.embed_face_with_diagnostics(face_img)
-                emb_face = res_face["embedding"]
-                face_status = res_face["face_status"]
-            except Exception as face_err:
-                LOGGER.debug(f"Internal face detection failure: {face_err}")
+                # Attempt face detection on query image for person search
+                try:
+                    await query_file.seek(0)
+                    face_img = Image.open(query_file.file)
+                    res_face = gpu_scheduler.embed_face_with_diagnostics(face_img)
+                    emb_face = res_face["embedding"]
+                    face_status = res_face["face_status"]
+                except Exception as face_err:
+                    LOGGER.debug(f"Internal face detection failure: {face_err}")
+                    emb_face = None
+                    face_status = "NO_FACE"
+
+            elif normalized_qcat == "object":
+                # Explicit Object Intent: Treat as non-person object/vehicle; suppress face and Re-ID extraction
+                entity_type = "vehicle"
+                try:
+                    cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                    with gpu_scheduler.gpu_lock:
+                        yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
+                    if yolo_results and len(yolo_results[0].boxes) > 0:
+                        veh_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [2, 3, 5, 7]]
+                        if veh_boxes:
+                            best_box = max(veh_boxes, key=lambda b: float(b.conf[0]))
+                            bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
+                            box_area = (bx2 - bx1) * (by2 - by1)
+                            img_area = float(img.width * img.height)
+                            if box_area < 0.80 * img_area:
+                                w, h = img.width, img.height
+                                pad_x = (bx2 - bx1) * 0.05
+                                pad_y = (by2 - by1) * 0.05
+                                cx1 = max(0, int(bx1 - pad_x))
+                                cy1 = max(0, int(by1 - pad_y))
+                                cx2 = min(w, int(bx2 + pad_x))
+                                cy2 = min(h, int(by2 + pad_y))
+                                if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
+                                    query_crop = img.crop((cx1, cy1, cx2, cy2))
+                except Exception as yolo_err:
+                    LOGGER.debug(f"Object query crop refinement note: {yolo_err}")
+                    query_crop = img
+
+                emb = gpu_scheduler.embed_image(query_crop)
+                # Explicitly suppress face and Re-ID extraction for object queries to prevent misrouting
+                emb_reid = None
                 emb_face = None
                 face_status = "NO_FACE"
-                
+
+            elif normalized_qcat in ["scene", "region"]:
+                # Scene or Region search: use full frame or spatial region crop without entity filtering
+                entity_type = None
+                query_crop = img
+                emb = gpu_scheduler.embed_image(query_crop)
+                emb_reid = None
+                emb_face = None
+                face_status = "NO_FACE"
+
+            else:
+                # Backward-compatible auto-classification branch
+                try:
+                    cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                    with gpu_scheduler.gpu_lock:
+                        yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
+                    if yolo_results and len(yolo_results[0].boxes) > 0:
+                        target_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [0, 2, 3, 5, 7]]
+                        if target_boxes:
+                            best_box = max(target_boxes, key=lambda b: float(b.conf[0]))
+                            cls_idx = int(best_box.cls[0])
+                            if cls_idx == 0:
+                                entity_type = "person"
+                            elif cls_idx in [2, 3, 5, 7]:
+                                entity_type = "vehicle"
+
+                            bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
+                            box_area = (bx2 - bx1) * (by2 - by1)
+                            img_area = float(img.width * img.height)
+                            if box_area < 0.80 * img_area:
+                                w, h = img.width, img.height
+                                pad_x = (bx2 - bx1) * 0.05
+                                pad_y = (by2 - by1) * 0.05
+                                cx1 = max(0, int(bx1 - pad_x))
+                                cy1 = max(0, int(by1 - pad_y))
+                                cx2 = min(w, int(bx2 + pad_x))
+                                cy2 = min(h, int(by2 + pad_y))
+                                if (cx2 - cx1) >= 32 and (cy2 - cy1) >= 32:
+                                    query_crop = img.crop((cx1, cy1, cx2, cy2))
+                except Exception as yolo_err:
+                    LOGGER.debug(f"Failed to detect query image entity type: {yolo_err}")
+                    query_crop = img
+
+                emb = gpu_scheduler.embed_image(query_crop)
+
+                # If person entity, extract Re-ID embedding from the query crop
+                if entity_type == "person":
+                    try:
+                        emb_reid = gpu_scheduler.embed_reid(query_crop)
+                    except Exception as re_err:
+                        LOGGER.debug(f"Query Re-ID extraction note: {re_err}")
+                        emb_reid = None
+
+                # Attempt face detection internally on query image
+                try:
+                    await query_file.seek(0)
+                    face_img = Image.open(query_file.file)
+                    res_face = gpu_scheduler.embed_face_with_diagnostics(face_img)
+                    emb_face = res_face["embedding"]
+                    face_status = res_face["face_status"]
+                except Exception as face_err:
+                    LOGGER.debug(f"Internal face detection failure: {face_err}")
+                    emb_face = None
+                    face_status = "NO_FACE"
+
             matches = search_layer.search_by_image(
-                emb, filters, top_k, 
-                entity_type=entity_type, 
-                face_embedding=emb_face, 
+                emb, filters, top_k,
+                entity_type=entity_type,
+                face_embedding=emb_face,
                 face_status=face_status,
                 strict_gate=strict_gate,
                 reid_embedding=emb_reid,
                 enable_rrf=True if emb_reid is not None else False
             )
-            
-            # Inject face matching diagnostic info to show in the UI
+
+            # Inject provenance and diagnostic labels
+            effective_intent = normalized_qcat or (entity_type if entity_type else "scene")
             for match in matches:
+                match["query_intent"] = effective_intent
+                match["intent_source"] = intent_source
                 if match.get("match_type") == "face_assisted":
                     match["diagnostic_label"] = "Face signal used"
+                elif match.get("match_type") == "scene":
+                    match["diagnostic_label"] = "Scene keyframe match"
+                elif match.get("match_type") == "region":
+                    match["diagnostic_label"] = "Region tile match"
                 else:
-                    match["diagnostic_label"] = "Visual match"
-                    
+                    match["diagnostic_label"] = "Visual similarity match"
+
         # 4. Plate OCR Query Search (SQLite text pattern lookup)
         elif qtype == "plate" and query_text:
             p_job_id = filters.get("job_id")
             p_cam_id = filters.get("camera_id")
             matches = search_layer.search_by_plate(query_text, p_cam_id, p_job_id)
-            
+
         # 5. Saved Person re-ID Search (Face collection query)
         elif qtype == "saved_person" and saved_person_id:
             matches = search_layer.search_saved_person(saved_person_id, filters, top_k)
-            
+
         else:
             raise HTTPException(status_code=400, detail=f"Malformed query payload. Type: {qtype}")
-            
+
         # Enrich matches with display labels: Case/Job Name and Camera Name
         enriched_matches = []
         with sqlite_db.connection() as conn:
             conn.row_factory = sqlite3.Row
-            
+
             job_names = {}
             cam_names = {}
-            
+
             for match in matches:
                 m_job_id = match.get("job_id")
                 m_cam_id = match.get("camera_id")
-                
+
                 if m_job_id and m_job_id not in job_names:
                     cur = conn.execute("SELECT name FROM jobs WHERE id = ?", (m_job_id,))
                     row = cur.fetchone()
                     job_names[m_job_id] = row[0] if row else "Unknown Case"
-                    
+
                 if m_cam_id and m_cam_id not in cam_names:
                     cur = conn.execute("SELECT name FROM cameras WHERE id = ?", (m_cam_id,))
                     row = cur.fetchone()
                     cam_names[m_cam_id] = row[0] if row else "Unknown Camera"
-                    
+
                 match["job_name"] = job_names.get(m_job_id, "Unknown Case")
                 match["camera_name"] = cam_names.get(m_cam_id, "Unknown Camera")
                 enriched_matches.append(match)
-                
+
         if SEARCH_DEBUG and qtype == "image":
             LOGGER.info("IMAGE_SEARCH_TRACE_FINAL %s", getattr(search_layer, "last_image_search_diagnostics", {}))
         return enriched_matches
-            
+
     except VisualIndexEmptyError as e:
         LOGGER.info("IMAGE_SEARCH_INDEX_EMPTY %s", e.diagnostics)
         raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         LOGGER.error(f"Search query failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"SYSTEM_ERROR: Vector search engine failure: {e}")
@@ -971,21 +1084,21 @@ async def save_person_profile(
     try:
         # 1. Load image
         img = Image.open(face_image.file)
-        
+
         # 2. Extract facial embedding using MTCNN + FaceNet (GPU safe)
         emb = gpu_scheduler.embed_face(img)
         if not emb:
             raise HTTPException(status_code=400, detail="Could not detect face in profile image.")
-            
+
         # 3. Save profile image to media crops folder
         person_id = f"sp_{uuid.uuid4().hex[:12]}"
-        
+
         # Convert PIL to openCV numpy BGR for save_crop
         cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
         saved_path = media_storage.save_crop(
             cv_img, "face", "saved_profiles", "profile", person_id, 0
         )
-        
+
         # 4. Save face embedding vector to ChromaDB
         face_emb_id = f"vector_{person_id}"
         vector_db.add_face_embeddings(
@@ -993,12 +1106,12 @@ async def save_person_profile(
             embeddings=[emb],
             metadatas=[{"person_id": person_id, "name": name, "job_id": job_id or ""}]
         )
-        
+
         # 5. Save metadata profile to SQLite
         sqlite_db.add_saved_person(person_id, name, str(saved_path), face_emb_id, job_id)
-        
+
         return {"person_id": person_id, "name": name, "status": "saved"}
-        
+
     except Exception as e:
         LOGGER.error(f"Failed to save profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1072,12 +1185,12 @@ async def register_alert_rule(
     query_id = f"aq_{uuid.uuid4().hex[:12]}"
     query_emb = None
     query_image_path = None
-    
+
     try:
         # Load and embed visual rules
         if qtype in ["text"] and query_text:
             query_emb = gpu_scheduler.embed_text(query_text)
-            
+
         elif qtype in ["image"] and query_file:
             img = Image.open(query_file.file)
             query_emb = gpu_scheduler.embed_image(img)
@@ -1087,7 +1200,7 @@ async def register_alert_rule(
                 cv_img, "person", "active_rules", "queries", query_id, 0
             )
             query_image_path = str(saved_path)
-            
+
         elif qtype in ["face"] and query_file:
             img = Image.open(query_file.file)
             query_emb = gpu_scheduler.embed_face(img)
@@ -1098,10 +1211,10 @@ async def register_alert_rule(
                 cv_img, "face", "active_rules", "queries", query_id, 0
             )
             query_image_path = str(saved_path)
-            
+
         elif qtype == "plate" and query_text:
             pass # Plate matching runs string evaluation, no vector needed
-            
+
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported active query configuration: {qtype}")
 
@@ -1116,7 +1229,7 @@ async def register_alert_rule(
             threshold=threshold,
             job_id=job_id
         )
-        
+
         # Register rule inside matcher engine
         matcher.register_query(
             query_id=query_id,
@@ -1127,9 +1240,9 @@ async def register_alert_rule(
             threshold=threshold,
             job_id=job_id
         )
-        
+
         return {"query_id": query_id, "status": "active"}
-        
+
     except Exception as e:
         LOGGER.error(f"Failed to register active query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1156,7 +1269,7 @@ def list_alert_rules(job_id: Optional[str] = None):
 async def stream_live_alerts(request: Request, session_id: Optional[str] = None):
     """Native SSE endpoint streaming real-time triggered alert notifications to connected clients."""
     alert_queue = queue.Queue(maxsize=200)
-    
+
     # Listener callback
     def alert_listener(alert_payload: Dict[str, Any]) -> None:
         # If session filter specified, only push alerts matching that session
@@ -1166,9 +1279,9 @@ async def stream_live_alerts(request: Request, session_id: Optional[str] = None)
             alert_queue.put_nowait(alert_payload)
         except queue.Full:
             pass
-            
+
     dispatcher.add_alert_listener(alert_listener)
-    
+
     async def sse_generator():
         try:
             # Yield initial connect event
@@ -1177,7 +1290,7 @@ async def stream_live_alerts(request: Request, session_id: Optional[str] = None)
                 if await request.is_disconnected():
                     LOGGER.info("Alert SSE client disconnected.")
                     break
-                    
+
                 try:
                     # Non-blocking fetch from queue
                     alert = alert_queue.get_nowait()
@@ -1185,12 +1298,12 @@ async def stream_live_alerts(request: Request, session_id: Optional[str] = None)
                 except queue.Empty:
                     # Periodic keep-alive ping (required by browser SSE)
                     yield "event: ping\ndata: keep-alive\n\n"
-                    
+
                 await asyncio.sleep(0.5)
-                
+
         finally:
             dispatcher.remove_alert_listener(alert_listener)
-            
+
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 @app.get("/api/stream/metrics/{job_id}")
@@ -1203,13 +1316,13 @@ async def stream_perf_metrics(request: Request, job_id: str):
                 if await request.is_disconnected():
                     LOGGER.info(f"Metrics SSE client disconnected for job {job_id}.")
                     break
-                    
+
                 # 1. Fetch hardware telemetry metrics
                 telemetry = PerformanceMonitorInstance.get_metrics()
-                
+
                 # 2. Fetch current job progress percentage
                 progress_info = job_manager.get_job_progress(job_id)
-                
+
                 # Combine payload
                 payload = {
                     "timestamp": time.time(),
@@ -1217,7 +1330,7 @@ async def stream_perf_metrics(request: Request, job_id: str):
                     "status": progress_info.get("status", "unknown"),
                     "hardware": telemetry
                 }
-                
+
                 # Save telemetry stats periodically to DB (persistence path)
                 sqlite_db.add_perf_stat(
                     job_id=job_id,
@@ -1232,13 +1345,13 @@ async def stream_perf_metrics(request: Request, job_id: str):
                     face_l=telemetry["latency_face"],
                     db_l=telemetry["latency_db"]
                 )
-                
+
                 yield f"event: metrics\ndata: {json.dumps(payload)}\n\n"
                 await asyncio.sleep(1.0)
-                
+
         except Exception as e:
             LOGGER.error(f"Error in metrics generator: {e}")
-            
+
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 # Helper to generate unique uuid
@@ -1300,13 +1413,13 @@ def add_folder_item(folder_id: str, item: FolderItemCreate):
     # Enforce strict cross-investigation validation check
     with sqlite_db.connection() as conn:
         conn.row_factory = sqlite3.Row
-        
+
         # 1. Fetch folder to find its job_id
         f_row = conn.execute("SELECT job_id FROM folders WHERE id = ?", (folder_id,)).fetchone()
         if not f_row:
             raise HTTPException(status_code=404, detail="Folder not found.")
         folder_job_id = f_row["job_id"]
-        
+
         # 2. Check the item's job_id
         item_job_id = None
         if item.item_type == "track":
@@ -1317,11 +1430,11 @@ def add_folder_item(folder_id: str, item: FolderItemCreate):
             d_row = conn.execute("SELECT t.job_id FROM detections d JOIN tracks t ON d.track_id = t.id WHERE d.id = ?", (item.item_id,)).fetchone()
             if d_row:
                 item_job_id = d_row["job_id"]
-                
+
         # 3. Reject if they don't match (unless one is NULL/unassigned legacy, in which case we permit to bootstrap)
         if item_job_id and folder_job_id and item_job_id != folder_job_id:
             raise HTTPException(status_code=403, detail="Forbidden: Cannot add items from a different investigation.")
-            
+
     iid = f"item_{uuid.uuid4().hex[:12]}"
     try:
         sqlite_db.add_folder_item(iid, folder_id, item.item_type, item.item_id, item.metadata)
@@ -1388,7 +1501,7 @@ def append_video_to_job(job_id: str, cam: CameraAppend):
         job_record = sqlite_db.get_job(job_id)
         if not job_record:
             raise HTTPException(status_code=404, detail="Job not found.")
-            
+
         # Register new camera source in SQLite
         cam_id = f"cam_{uuid.uuid4().hex[:8]}"
         from pipeline.job_manager import get_file_sha256
@@ -1401,10 +1514,10 @@ def append_video_to_job(job_id: str, cam: CameraAppend):
             source_path=cam.path,
             checksum=checksum
         )
-        
+
         # Reset job status back to queued so it can be restarted
         sqlite_db.update_job_status(job_id, "queued")
-        
+
         return {"status": "queued", "camera_id": cam_id}
     except Exception as e:
         LOGGER.error(f"Failed to append video to job {job_id}: {e}", exc_info=True)
@@ -1423,7 +1536,7 @@ def get_dashboard_stats(job_id: Optional[str] = None):
             row = cur.fetchone()
             total_sec = row[0] if row and row[0] is not None else 0.0
             total_hours = total_sec / 3600.0
-            
+
             # 2. Objects detected
             if job_id:
                 cur = conn.execute("SELECT COUNT(d.id) FROM detections d JOIN tracks t ON d.track_id = t.id WHERE t.job_id = ?", (job_id,))
@@ -1437,37 +1550,37 @@ def get_dashboard_stats(job_id: Optional[str] = None):
             else:
                 cur = conn.execute("SELECT COUNT(*) FROM detections WHERE entity_type = 'person'")
             count_persons = cur.fetchone()[0]
-            
+
             if job_id:
                 cur = conn.execute("SELECT COUNT(d.id) FROM detections d JOIN tracks t ON d.track_id = t.id WHERE d.entity_type = 'vehicle' AND t.job_id = ?", (job_id,))
             else:
                 cur = conn.execute("SELECT COUNT(*) FROM detections WHERE entity_type = 'vehicle'")
             count_vehicles = cur.fetchone()[0]
-            
+
             if job_id:
                 cur = conn.execute("SELECT COUNT(*) FROM tracks WHERE plate_text IS NOT NULL AND plate_text != '' AND job_id = ?", (job_id,))
             else:
                 cur = conn.execute("SELECT COUNT(*) FROM tracks WHERE plate_text IS NOT NULL AND plate_text != ''")
             count_plates = cur.fetchone()[0]
-            
+
             # 3. Active jobs
             if job_id:
                 cur = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('indexing', 'starting') AND id = ?", (job_id,))
             else:
                 cur = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('indexing', 'starting')")
             active_jobs_count = cur.fetchone()[0]
-            
+
             # 4. Active cameras
             if job_id:
                 cur = conn.execute("SELECT COUNT(DISTINCT id) FROM cameras WHERE job_id = ?", (job_id,))
             else:
                 cur = conn.execute("SELECT COUNT(DISTINCT id) FROM cameras")
             active_cams = cur.fetchone()[0]
-            
+
             # 5. Activity Feed (last 10 tracks with their camera and start time)
             if job_id:
                 cur = conn.execute("""
-                    SELECT t.id, t.entity_type, t.start_time, c.name as camera_name, j.name as job_name 
+                    SELECT t.id, t.entity_type, t.start_time, c.name as camera_name, j.name as job_name
                     FROM tracks t
                     JOIN cameras c ON t.camera_id = c.id
                     JOIN jobs j ON t.job_id = j.id
@@ -1476,7 +1589,7 @@ def get_dashboard_stats(job_id: Optional[str] = None):
                 """, (job_id,))
             else:
                 cur = conn.execute("""
-                    SELECT t.id, t.entity_type, t.start_time, c.name as camera_name, j.name as job_name 
+                    SELECT t.id, t.entity_type, t.start_time, c.name as camera_name, j.name as job_name
                     FROM tracks t
                     JOIN cameras c ON t.camera_id = c.id
                     JOIN jobs j ON t.job_id = j.id
@@ -1491,7 +1604,7 @@ def get_dashboard_stats(job_id: Optional[str] = None):
                     "camera_name": r[3],
                     "job_name": r[4]
                 })
-                
+
             return {
                 "total_hours_indexed": round(total_hours, 2),
                 "objects_detected": total_detections,
@@ -1516,20 +1629,20 @@ def execute_quick_search(q: str):
             cur = conn.execute("SELECT id, name FROM jobs WHERE lower(name) LIKE ?", (f"%{q}%",))
             for r in cur.fetchall():
                 results.append({"type": "case", "name": r[1], "id": r[0]})
-                
+
             # 2. Search folders
             cur = conn.execute("SELECT id, name FROM folders WHERE lower(name) LIKE ?", (f"%{q}%",))
             for r in cur.fetchall():
                 results.append({"type": "folder", "name": r[1], "id": r[0]})
-                
+
             # 3. Search labeled tracks
             cur = conn.execute("SELECT t.id, t.label, t.camera_id, t.start_time, t.job_id FROM tracks t WHERE t.label IS NOT NULL AND t.label != '' AND lower(t.label) LIKE ?", (f"%{q}%",))
             for r in cur.fetchall():
                 results.append({
-                    "type": "label", 
-                    "name": r[1], 
-                    "id": r[0], 
-                    "camera_id": r[2], 
+                    "type": "label",
+                    "name": r[1],
+                    "id": r[0],
+                    "camera_id": r[2],
                     "timestamp": r[3],
                     "job_id": r[4]
                 })
@@ -1546,12 +1659,12 @@ def get_system_telemetry():
         sqlite_size = SQLITE_DB_PATH.stat().st_size if SQLITE_DB_PATH.exists() else 0
         chroma_size = sum(f.stat().st_size for f in CHROMA_PERSIST_DIR.glob("**/*") if f.is_file()) if CHROMA_PERSIST_DIR.exists() else 0
         crops_size = sum(f.stat().st_size for f in MEDIA_DIR.glob("**/*") if f.is_file()) if MEDIA_DIR.exists() else 0
-        
+
         total, used, free = shutil.disk_usage(".")
-        
+
         # 2. Performance stats
         telemetry = PerformanceMonitorInstance.get_metrics()
-        
+
         # 3. Model configurations
         from config import DEVICE, YOLO_DEVICE, CLIP_DEVICE, FACE_DEVICE, OCR_DEVICE
         models = [
@@ -1560,7 +1673,7 @@ def get_system_telemetry():
             {"name": "FaceNet InceptionResnetV1", "device": str(FACE_DEVICE), "status": "loaded" if gpu_scheduler.face_embedder else "unloaded"},
             {"name": "EasyOCR Plate Recognition", "device": str(OCR_DEVICE), "status": "loaded" if gpu_scheduler.ocr_reader else "unloaded"}
         ]
-        
+
         return {
             "storage": {
                 "sqlite_size_bytes": sqlite_size,
@@ -1598,7 +1711,7 @@ def merge_selected_clips(job_id: str, req: MergeClipsRequest):
         )
         if not result:
             raise HTTPException(status_code=400, detail="Could not generate merged video from selected observations.")
-            
+
         # Automatically register in evidence folder
         try:
             folders = sqlite_db.get_folders(job_id)
@@ -1609,7 +1722,7 @@ def merge_selected_clips(job_id: str, req: MergeClipsRequest):
                 target_folder_id = fid
             else:
                 target_folder_id = target_folder["id"]
-                
+
             item_id = f"clip_{uuid.uuid4().hex[:12]}"
             sqlite_db.add_folder_item(
                 item_id=item_id,
@@ -1639,7 +1752,7 @@ def merge_journey_video(job_id: str, req: MergeJourneyRequest):
     try:
         from pipeline.video_merger import video_merger
         journey_data = journey_engine.reconstruct_journey(req.track_uuid, similarity_threshold=req.similarity)
-        
+
         events = journey_data.get("confirmed_journey", []) if isinstance(journey_data, dict) else journey_data
         if not events:
             raise HTTPException(status_code=400, detail="No validated journey transitions available to merge.")
@@ -1652,7 +1765,7 @@ def merge_journey_video(job_id: str, req: MergeJourneyRequest):
         )
         if not result:
             raise HTTPException(status_code=400, detail="Could not generate merged journey video.")
-            
+
         return result
     except HTTPException as he:
         raise he
@@ -1667,15 +1780,15 @@ def get_track_summary(track_uuid: str):
         track = sqlite_db.get_track(track_uuid)
         if not track:
             raise HTTPException(status_code=404, detail="Track not found.")
-            
+
         # 2. Get camera info
         cams = sqlite_db.get_cameras_by_job(track["job_id"])
         camera_map = {c["id"]: c["name"] for c in cams}
         camera_name = camera_map.get(track["camera_id"], track["camera_id"])
-        
+
         # 3. Get label if any
         label_str = f"User Label: {track['label']}" if track.get("label") else "No User Label"
-        
+
         # 4. Get journey details
         events = []
         try:
@@ -1686,7 +1799,7 @@ def get_track_summary(track_uuid: str):
                 events = journey_result
         except Exception as je:
             LOGGER.warning(f"Journey reconstruction failed for track {track_uuid}: {je}")
-            
+
         # 5. Build chronological narrative
         sentences = []
         if not events:
@@ -1697,13 +1810,13 @@ def get_track_summary(track_uuid: str):
             first_event = events[0]
             first_cam = camera_map.get(first_event.get("camera_id"), first_event.get("camera_id"))
             sentences.append(f"The subject was first detected on the '{first_cam}' camera at time index {first_event.get('timestamp', 0.0):.1f}s.")
-            
+
             for i in range(1, len(events)):
                 evt = events[i]
                 cam = camera_map.get(evt.get("camera_id"), evt.get("camera_id"))
                 sim = evt.get("confidence", evt.get("similarity", 0.85))
                 transit = evt.get("transit_time_sec", 0.0)
-                
+
                 # Check certainty
                 if sim >= 0.85:
                     match_desc = f"with a strong track association (similarity: {sim:.2f})"
@@ -1711,13 +1824,13 @@ def get_track_summary(track_uuid: str):
                     match_desc = f"with a possible visual match (similarity: {sim:.2f})"
                 else:
                     match_desc = f"with a weak similarity correlation (similarity: {sim:.2f})"
-                    
+
                 sentences.append(f"Subsequently, the subject was observed on the '{cam}' camera at time index {evt.get('timestamp', 0.0):.1f}s {match_desc}, representing a transit time of {transit:.1f}s from the prior camera field.")
-                
+
         # 6. Retrieve track notes
         notes = sqlite_db.get_notes("track", track_uuid)
         notes_str = "\n".join([f"- [Note] {n['content']} (Saved on {time.strftime('%Y-%m-%d %H:%M', time.localtime(n['created_at']))})" for n in notes]) if notes else "No notes added."
-        
+
         # 7. Check source footage characteristics (infrared/night monochrome vs color)
         detections = sqlite_db.get_detections_by_track(track_uuid)
         is_ir_mono = False
@@ -1755,23 +1868,23 @@ def get_job_summary(job_id: str):
         job = sqlite_db.get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Investigation not found.")
-            
+
         cams = sqlite_db.get_cameras_by_job(job_id)
-        
+
         with sqlite_db.connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("SELECT * FROM tracks WHERE job_id = ? ORDER BY start_time DESC", (job_id,))
             tracks = [dict(row) for row in cursor.fetchall()]
-            
+
         # Camera list
         cam_list_str = "\n".join([f"- Camera: **{c['name']}** (Source: `{c['source_path']}`)" for c in cams]) if cams else "No cameras registered."
-        
+
         # Group tracks
         persons = [t for t in tracks if t["entity_type"] == "person"]
         vehicles = [t for t in tracks if t["entity_type"] == "vehicle"]
         plates = [t for t in tracks if t.get("plate_text")]
         labeled = [t for t in tracks if t.get("label")]
-        
+
         # Labeled/Plate tracks log
         interest_str = ""
         if labeled or plates:
@@ -1802,7 +1915,7 @@ def get_job_summary(job_id: str):
                 all_notes = [(row["track_id"], row["content"], row["created_at"]) for row in cursor.fetchall()]
         except Exception as ne:
             LOGGER.warning("Could not load case notes for summary: %s", ne)
-        
+
         notes_str = ""
         if all_notes:
             notes_str = "\n".join([f"- Track #{t_id}: \"{content}\" (Saved at {time.strftime('%Y-%m-%d %H:%M', time.localtime(c_at))})" for t_id, content, c_at in all_notes])
@@ -1845,10 +1958,10 @@ def get_folder_summary(folder_id: str):
         folder = next((f for f in folders if f["id"] == folder_id), None)
         if not folder:
             raise HTTPException(status_code=404, detail="Folder not found.")
-            
+
         items = sqlite_db.get_folder_items(folder_id)
         notes = sqlite_db.get_notes("folder", folder_id)
-        
+
         # Group items by timestamp to sort chronologically
         evidence_entries = []
         for item in items:
@@ -1863,11 +1976,11 @@ def get_folder_summary(folder_id: str):
                     track_id = data.get("track_id", "N/A")
                     entity_type = data.get("entity_type", "Unknown")
                     label = data.get("label", "")
-                    
+
                     desc = f"Track #{track_id.split('_').pop() if '_' in track_id else track_id} ({entity_type.upper()})"
                     if label:
                         desc += f" labeled as **{label}**"
-                    
+
                     evidence_entries.append({
                         "timestamp": timestamp,
                         "camera_id": camera_id,
@@ -1889,22 +2002,22 @@ def get_folder_summary(folder_id: str):
                     "description": f"Item {item['item_type']} (ID: {item['item_id']})",
                     "created_at": item["created_at"]
                 })
-                
+
         # Sort chronologically by timestamp
         evidence_entries.sort(key=lambda x: x["timestamp"])
-        
+
         chronological_lines = []
         for i, entry in enumerate(evidence_entries, 1):
             chronological_lines.append(f"{i}. **[{entry['camera_id']} @ {entry['timestamp']:.1f}s]** {entry['description']}")
-            
+
         chronology_str = "\n".join(chronological_lines) if chronological_lines else "No observation evidence bookmark items added to this folder."
-        
+
         # Notes list
         notes_lines = []
         for n in notes:
             notes_lines.append(f"- \"{n['content']}\" (Added on {time.strftime('%Y-%m-%d %H:%M', time.localtime(n['created_at']))})")
         notes_str = "\n".join(notes_lines) if notes_lines else "No notes recorded in this case folder."
-        
+
         markdown = f"""# FORENSIC EVIDENCE DOSSIER: {folder['name'].upper()}
 
 **Description / Scope:** {folder['description'] or 'General evidence collection'}

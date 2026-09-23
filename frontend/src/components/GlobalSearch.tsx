@@ -13,7 +13,7 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
   const [queryText, setQueryText] = useState("");
   const [queryFile, setQueryFile] = useState<File | null>(null);
   const [, setQueryFilePreview] = useState<string | null>(null);
-  
+
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [searched, setSearched] = useState(false);
@@ -38,7 +38,7 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
       if (tab === "image" && queryFile) searchParams.queryFile = queryFile;
 
       const matches = await apiService.executeForensicSearch(searchParams);
-      
+
       // Filter by accepted relevance threshold (calibrated for text / image)
       const minThresh = tab === "text" ? 0.28 : 0.55;
       const accepted = matches.filter(m => (m.similarity || 0) >= minThresh);
@@ -71,13 +71,13 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
       <div className="card" style={{ padding: "20px", marginBottom: "24px" }}>
         <form onSubmit={handleSearch} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           <div style={{ display: "flex", gap: "8px", borderBottom: "1px solid var(--border-color)", paddingBottom: "10px" }}>
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn"
               onClick={() => { setTab("text"); setResults([]); setSearched(false); }}
-              style={{ 
-                padding: "6px 14px", 
-                fontSize: "12px", 
+              style={{
+                padding: "6px 14px",
+                fontSize: "12px",
                 backgroundColor: tab === "text" ? "var(--bg-input)" : "transparent",
                 color: tab === "text" ? "var(--color-accent)" : "var(--text-secondary)",
                 border: tab === "text" ? "1px solid var(--border-color)" : "none"
@@ -85,13 +85,13 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
             >
               Text Description
             </button>
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn"
               onClick={() => { setTab("image"); setResults([]); setSearched(false); }}
-              style={{ 
-                padding: "6px 14px", 
-                fontSize: "12px", 
+              style={{
+                padding: "6px 14px",
+                fontSize: "12px",
                 backgroundColor: tab === "image" ? "var(--bg-input)" : "transparent",
                 color: tab === "image" ? "var(--color-accent)" : "var(--text-secondary)",
                 border: tab === "image" ? "1px solid var(--border-color)" : "none"
@@ -105,10 +105,10 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ fontSize: "11px" }}>Description across all cases</label>
               <div style={{ display: "flex", gap: "10px" }}>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. person in red shirt, white sedan, black bag" 
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. person in red shirt, white sedan, black bag"
                   value={queryText}
                   onChange={(e) => setQueryText(e.target.value)}
                   style={{ fontSize: "13px" }}
@@ -120,15 +120,15 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <input 
-                type="file" 
-                accept="image/*" 
+              <input
+                type="file"
+                accept="image/*"
                 onChange={(e) => {
                   if (e.target.files && e.target.files[0]) {
                     setQueryFile(e.target.files[0]);
                     setQueryFilePreview(URL.createObjectURL(e.target.files[0]));
                   }
-                }} 
+                }}
               />
               <button type="submit" className="btn btn-primary" disabled={searching || !queryFile} style={{ width: "fit-content", padding: "8px 20px" }}>
                 <Search size={15} /> Search Image Across Cases
@@ -155,7 +155,7 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px" }}>
             {results.map((res, idx) => (
-              <div 
+              <div
                 key={idx}
                 className="card"
                 style={{
@@ -177,14 +177,14 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
                   )}
                   {res.match_type && (
                     <div style={{ position: "absolute", top: "6px", left: "6px" }}>
-                      <span style={{ 
-                        fontSize: "9px", 
-                        fontWeight: "700", 
-                        padding: "2px 6px", 
-                        borderRadius: "4px", 
-                        backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)", 
-                        color: "#ffffff", 
-                        textTransform: "uppercase" 
+                      <span style={{
+                        fontSize: "9px",
+                        fontWeight: "700",
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)",
+                        color: "#ffffff",
+                        textTransform: "uppercase"
                       }}>
                         {res.match_type === "scene" ? "Scene Match" : "Object Match"}
                       </span>
@@ -201,13 +201,13 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
                     {res.camera_name || res.camera_id || "Camera"}
                   </div>
                   <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                    Timestamp: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"} · Score: {(res.similarity * 100).toFixed(0)}%
+                    Timestamp: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"} · Similarity: {res.similarity.toFixed(2)}
                   </div>
                 </div>
 
                 {res.job_id && (
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     className="btn btn-secondary"
                     style={{ width: "100%", padding: "6px", fontSize: "11px", marginTop: "4px" }}
                     onClick={() => onOpenInvestigation(res.job_id)}

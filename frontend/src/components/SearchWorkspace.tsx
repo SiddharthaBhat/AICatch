@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Search, Image as ImageIcon, Play, 
-  FolderPlus, AlertTriangle, 
+import {
+  Search, Image as ImageIcon, Play,
+  FolderPlus, AlertTriangle,
   X, Sliders, FileText, Loader2, Layers
 } from "lucide-react";
 import { apiService, getMediaUrl } from "../services/api";
@@ -30,15 +30,15 @@ const DetectionCropImage: React.FC<DetectionCropImageProps> = ({
   // If crop_path is missing, empty, or failed to load, display neutral missing-evidence state (never a dummy avatar)
   if (!cropPath || loadError) {
     return (
-      <div 
-        style={{ 
-          width: "100%", 
-          height: "100%", 
-          display: "flex", 
-          alignItems: "center", 
-          justifyContent: "center", 
-          color: "var(--text-muted)", 
-          fontSize: "11px", 
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--text-muted)",
+          fontSize: "11px",
           textAlign: "center",
           padding: "8px",
           backgroundColor: "#0d1520"
@@ -50,11 +50,11 @@ const DetectionCropImage: React.FC<DetectionCropImageProps> = ({
   }
 
   return (
-    <img 
-      src={getMediaUrl(cropPath)} 
-      alt={alt} 
-      style={style} 
-      onError={() => setLoadError(true)} 
+    <img
+      src={getMediaUrl(cropPath)}
+      alt={alt}
+      style={style}
+      onError={() => setLoadError(true)}
     />
   );
 };
@@ -67,26 +67,27 @@ interface SearchWorkspaceProps {
   onSelectTargetForJourney?: (obs: any) => void;
 }
 
-export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({ 
-  jobId, 
-  cameras = [], 
+export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
+  jobId,
+  cameras = [],
   caseName = "Investigation",
   onSelectTargetForJourney
 }) => {
   const [tab, setTab] = useState<"text" | "image" | "plate">("text");
-  
+
   // Query Inputs
   const [queryText, setQueryText] = useState("");
   const [queryFile, setQueryFile] = useState<File | null>(null);
   const [queryFilePreview, setQueryFilePreview] = useState<string | null>(null);
-  
+  const [queryCategory, setQueryCategory] = useState<"auto" | "person" | "object" | "scene" | "region">("auto");
+
   // Advanced Filters
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [filterCamera, setFilterCamera] = useState("");
   const [filterObjectType, setFilterObjectType] = useState("");
   const [filterSimilarity, setFilterSimilarity] = useState(0.28);
   const [filterConfidence] = useState(0.50);
-  
+
   // State
   const [results, setResults] = useState<any[]>([]);
   const [searching, setSearching] = useState(false);
@@ -185,6 +186,9 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       } else if (tab === "image") {
         if (!queryFile) throw new Error("Please select an image file.");
         searchParams.queryFile = queryFile;
+        if (queryCategory !== "auto") {
+          searchParams.qcategory = queryCategory;
+        }
       } else if (tab === "plate") {
         if (!queryText.trim()) throw new Error("Please enter a license plate string.");
         searchParams.queryText = queryText.trim();
@@ -194,7 +198,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       if (filterObjectType) searchParams.objectType = filterObjectType;
 
       const matches = await apiService.executeForensicSearch(searchParams);
-      
+
       // Filter strictly by accepted threshold
       const filtered = matches.filter(match => {
         if (match.similarity !== undefined && match.similarity < filterSimilarity) return false;
@@ -299,12 +303,12 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       const resBlob = await fetch(cropUrl);
       const blob = await resBlob.blob();
       const file = new File([blob], "query_crop.jpg", { type: "image/jpeg" });
-      
+
       setTab("image");
       setFilterSimilarity(0.55);
       setQueryFile(file);
       setQueryFilePreview(cropUrl);
-      
+
       const searchParams = {
         qtype: "image" as const,
         queryFile: file,
@@ -344,12 +348,12 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
   return (
     <div style={{ display: "flex", gap: "24px", height: "100%", position: "relative" }}>
       {/* Left Search Sidebar & Filters */}
-      <div 
-        style={{ 
-          width: "320px", 
-          flexShrink: 0, 
-          display: "flex", 
-          flexDirection: "column", 
+      <div
+        style={{
+          width: "320px",
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
           gap: "16px",
           overflowY: "auto"
         }}
@@ -415,7 +419,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
             {tab === "text" && (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ fontSize: "11px" }}>Describe what you're looking for</label>
-                <textarea 
+                <textarea
                   className="form-textarea"
                   rows={3}
                   placeholder="e.g. person in red shirt, white sedan, person with backpack"
@@ -429,20 +433,20 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
             {tab === "image" && (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ fontSize: "11px" }}>Target Image</label>
-                <div 
-                  style={{ 
-                    border: "1px dashed var(--border-color)", 
-                    borderRadius: "8px", 
-                    padding: "16px 10px", 
+                <div
+                  style={{
+                    border: "1px dashed var(--border-color)",
+                    borderRadius: "8px",
+                    padding: "16px 10px",
                     textAlign: "center",
                     backgroundColor: "var(--bg-input)",
                     cursor: "pointer",
                     position: "relative"
                   }}
                 >
-                  <input 
-                    type="file" 
-                    accept="image/*" 
+                  <input
+                    type="file"
+                    accept="image/*"
                     onChange={handleFileChange}
                     style={{ opacity: 0, position: "absolute", top: 0, left: 0, width: "100%", height: "100%", cursor: "pointer" }}
                   />
@@ -455,13 +459,39 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                     </div>
                   )}
                 </div>
+
+                <div style={{ marginTop: "10px" }}>
+                  <label className="form-label" style={{ fontSize: "11px", marginBottom: "4px", display: "block" }}>Target Intent</label>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "4px" }}>
+                    {(["auto", "person", "object", "scene", "region"] as const).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setQueryCategory(cat)}
+                        style={{
+                          fontSize: "10px",
+                          padding: "5px 2px",
+                          borderRadius: "4px",
+                          border: queryCategory === cat ? "1px solid var(--color-accent)" : "1px solid var(--border-color)",
+                          backgroundColor: queryCategory === cat ? "rgba(99, 102, 241, 0.2)" : "var(--bg-card)",
+                          color: queryCategory === cat ? "var(--color-accent)" : "var(--text-secondary)",
+                          fontWeight: queryCategory === cat ? "700" : "500",
+                          textTransform: "capitalize",
+                          cursor: "pointer"
+                        }}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
             {tab === "plate" && (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ fontSize: "11px" }}>License Plate String</label>
-                <input 
+                <input
                   type="text"
                   className="form-input"
                   placeholder="e.g. XYZ123"
@@ -489,7 +519,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                   {cameras.length > 0 && (
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label" style={{ fontSize: "10px" }}>Camera Filter</label>
-                      <select 
+                      <select
                         className="form-select"
                         value={filterCamera}
                         onChange={(e) => setFilterCamera(e.target.value)}
@@ -505,7 +535,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
 
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label" style={{ fontSize: "10px" }}>Object Type</label>
-                    <select 
+                    <select
                       className="form-select"
                       value={filterObjectType}
                       onChange={(e) => setFilterObjectType(e.target.value)}
@@ -526,8 +556,8 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               </div>
             )}
 
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               className="btn btn-primary"
               disabled={searching}
               style={{ width: "100%", padding: "10px", fontSize: "13px", fontWeight: "600", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
@@ -576,7 +606,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               {results.map((res, idx) => {
                 const isSelected = selectedResult && (selectedResult.track_id === res.track_id || selectedResult.crop_path === res.crop_path);
                 const camName = getCameraDisplayName(res.camera_id);
-                
+
                 return (
                   <div
                     key={idx}
@@ -595,7 +625,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                     onClick={() => { setSelectedResult(res); handleOpenVideoViewer(res); }}
                   >
                     {/* Real Person / Object Crop Thumbnail */}
-                    <div 
+                    <div
                       style={{ width: "100%", height: "140px", backgroundColor: "#000", borderRadius: "6px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
                       onClick={(e) => { e.stopPropagation(); handleOpenVideoViewer(res); }}
                       title="Click to open original video at this timestamp"
@@ -607,14 +637,14 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                           {res.entity_type || "OBJECT"}
                         </span>
                         {res.match_type && (
-                          <span style={{ 
-                            fontSize: "9px", 
-                            fontWeight: "700", 
-                            padding: "2px 6px", 
-                            borderRadius: "4px", 
-                            backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)", 
-                            color: "#ffffff", 
-                            textTransform: "uppercase" 
+                          <span style={{
+                            fontSize: "9px",
+                            fontWeight: "700",
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                            backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)",
+                            color: "#ffffff",
+                            textTransform: "uppercase"
                           }}>
                             {res.match_type === "scene" ? "Scene Match" : "Object Match"}
                           </span>
@@ -628,11 +658,18 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                         <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {camName}
                         </span>
-                        {typeof res.similarity === "number" && (
-                          <span style={{ fontSize: "11px", color: "var(--color-success)", fontWeight: "700" }}>
-                            {(res.similarity * 100).toFixed(0)}% Match
-                          </span>
-                        )}
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          {typeof res.similarity === "number" && (
+                            <span style={{ fontSize: "11px", color: "var(--color-success)", fontWeight: "700" }}>
+                              Sim: {res.similarity.toFixed(2)}
+                            </span>
+                          )}
+                          {typeof res.reid_similarity === "number" && (
+                            <span style={{ fontSize: "10px", color: "var(--color-accent)", fontWeight: "600" }}>
+                              Re-ID: {res.reid_similarity.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
                         <span>Time: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"}</span>
@@ -686,7 +723,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
 
       {/* Right Side Observation Detail Panel (Drawer) */}
       {selectedResult && (
-        <div 
+        <div
           className="card"
           style={{
             position: "absolute",
@@ -710,7 +747,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
             <span style={{ fontSize: "12px", fontWeight: "700", color: "var(--color-accent)", textTransform: "uppercase" }}>
               Observation Detail
             </span>
-            <button 
+            <button
               type="button"
               onClick={() => setSelectedResult(null)}
               style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
@@ -720,7 +757,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
           </div>
 
           {/* Large Observation Image */}
-          <div 
+          <div
             style={{ width: "100%", height: "200px", backgroundColor: "#000", borderRadius: "8px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
             onClick={() => handleOpenVideoViewer(selectedResult)}
             title="Click to open video viewer"
@@ -751,16 +788,42 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               <strong style={{ color: "var(--text-primary)" }}>{typeof selectedResult.timestamp === "number" ? `${selectedResult.timestamp.toFixed(1)}s` : "N/A"}</strong>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "var(--text-muted)" }}>Match Quality:</span>
-              <strong style={{ color: "var(--color-accent)" }}>{typeof selectedResult.similarity === "number" ? `${(selectedResult.similarity * 100).toFixed(0)}%` : "Validated"}</strong>
+              <span style={{ color: "var(--text-muted)" }}>Visual Similarity:</span>
+              <strong style={{ color: "var(--color-accent)" }}>{typeof selectedResult.similarity === "number" ? selectedResult.similarity.toFixed(4) : "N/A"}</strong>
             </div>
+            {typeof selectedResult.reid_similarity === "number" && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Re-ID Similarity:</span>
+                <strong style={{ color: "var(--color-success)" }}>{selectedResult.reid_similarity.toFixed(4)}</strong>
+              </div>
+            )}
+            {typeof selectedResult.face_similarity === "number" && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Face Similarity:</span>
+                <strong style={{ color: "#38bdf8" }}>{selectedResult.face_similarity.toFixed(4)}</strong>
+              </div>
+            )}
+            {selectedResult.query_intent && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Query Intent:</span>
+                <strong style={{ color: "var(--text-primary)", textTransform: "capitalize" }}>
+                  {selectedResult.query_intent} {selectedResult.intent_source === "explicit_intent" ? "(Explicit)" : "(Auto)"}
+                </strong>
+              </div>
+            )}
+            {selectedResult.diagnostic_label && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--text-muted)" }}>Diagnostic:</span>
+                <span style={{ color: "var(--text-secondary)", fontSize: "11px" }}>{selectedResult.diagnostic_label}</span>
+              </div>
+            )}
           </div>
 
           {/* Primary Action Buttons */}
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "10px" }}>
             {/* Primary Highlighted Open Video Action */}
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn btn-primary"
               style={{ fontSize: "13px", padding: "10px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontWeight: "600" }}
               onClick={() => handleOpenVideoViewer(selectedResult)}
@@ -768,8 +831,8 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               <Play size={15} /> Open Original Video
             </button>
 
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn btn-secondary"
               style={{ fontSize: "12px", padding: "8px", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               onClick={() => handleFindSimilar(selectedResult)}
@@ -778,8 +841,8 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
             </button>
 
             {onSelectTargetForJourney && (
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className="btn btn-secondary"
                 style={{ fontSize: "12px", padding: "8px", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
                 onClick={() => onSelectTargetForJourney(selectedResult)}
@@ -788,8 +851,8 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               </button>
             )}
 
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn btn-secondary"
               style={{ fontSize: "12px", padding: "8px", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               onClick={() => handleOpenGetDetails(selectedResult)}
@@ -797,8 +860,8 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
               <FileText size={13} /> Get Details (Subject Summary)
             </button>
 
-            <button 
-              type="button" 
+            <button
+              type="button"
               className="btn btn-secondary"
               style={{ fontSize: "12px", padding: "8px", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}
               onClick={() => handleSaveToEvidence(selectedResult)}
@@ -810,7 +873,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       )}
 
       {/* Forensic Video Viewer Modal */}
-      <ForensicVideoViewer 
+      <ForensicVideoViewer
         isOpen={showVideoViewer}
         onClose={() => setShowVideoViewer(false)}
         observation={viewerObservation}
@@ -822,7 +885,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
       />
 
       {/* Subject Summary Modal */}
-      <SubjectSummaryModal 
+      <SubjectSummaryModal
         isOpen={showSummaryModal}
         onClose={() => setShowSummaryModal(false)}
         subjectLabel={modalSubjectLabel}
@@ -839,7 +902,7 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 99999 }}>
           <div className="card" style={{ maxWidth: "400px", width: "100%", padding: "24px" }}>
             <h3 style={{ fontSize: "15px", color: "var(--text-primary)", marginBottom: "12px" }}>Save to Evidence Folder</h3>
-            
+
             <div className="form-group">
               <label className="form-label">Select Folder</label>
               <select className="form-select" value={selectedFolderId} onChange={(e) => setSelectedFolderId(e.target.value)}>

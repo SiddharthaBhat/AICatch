@@ -906,7 +906,7 @@ async def execute_search(
                     with gpu_scheduler.gpu_lock:
                         yolo_results = gpu_scheduler.yolo.predict(cv_img, verbose=False, conf=0.30)
                     if yolo_results and len(yolo_results[0].boxes) > 0:
-                        veh_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [2, 3, 5, 7]]
+                        veh_boxes = [b for b in yolo_results[0].boxes if int(b.cls[0]) in [1, 2, 3, 5, 7, 24, 26, 28]]
                         if veh_boxes:
                             best_box = max(veh_boxes, key=lambda b: float(b.conf[0]))
                             bx1, by1, bx2, by2 = [float(v) for v in best_box.xyxy[0]]
@@ -1011,6 +1011,8 @@ async def execute_search(
             for match in matches:
                 match["query_intent"] = effective_intent
                 match["intent_source"] = intent_source
+                if "source_type" not in match:
+                    match["source_type"] = match.get("match_type") or ("person" if entity_type == "person" else "object")
                 if match.get("match_type") == "face_assisted":
                     match["diagnostic_label"] = "Face signal used"
                 elif match.get("match_type") == "scene":

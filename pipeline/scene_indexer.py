@@ -64,9 +64,11 @@ class SceneIndexer:
     def generate_frame_tiles(
         frame: np.ndarray,
         tile_ratio: float = 0.45,
-        stride_ratio: float = 0.25
+        stride_ratio: float = 0.25,
+        include_micro_scale: bool = True
     ) -> List[Tuple[int, List[int], np.ndarray]]:
-        """Generates overlapping spatial tiles across a video frame.
+        """Generates overlapping multi-scale spatial tiles across a video frame.
+        Includes macro context tiles (~45%) and high-salience micro tiles (~22%) for small-object retrieval.
         Returns list of (tile_idx, [x1, y1, x2, y2], tile_bgr_crop).
         """
         H, W = frame.shape[:2]
@@ -94,6 +96,33 @@ class SceneIndexer:
                 tile_crop = frame[y1:y2, x1:x2]
                 tiles.append((tile_idx, [int(x1), int(y1), int(x2), int(y2)], tile_crop))
                 tile_idx += 1
+
+        # Micro-scale tiles for fine-grained small static objects (22% scale)
+        if include_micro_scale and W >= 128 and H >= 128:
+            tile_w_micro = max(32, int(W * 0.22))
+            tile_h_micro = max(32, int(H * 0.22))
+            stride_x_micro = max(24, int(W * 0.18))
+            stride_y_micro = max(24, int(H * 0.18))
+
+            xs_micro = sorted(list(set(list(range(0, W - tile_w_micro + 1, stride_x_micro)) + [max(0, W - tile_w_micro)])))
+            ys_micro = sorted(list(set(list(range(0, H - tile_h_micro + 1, stride_y_micro)) + [max(0, H - tile_h_micro)])))
+
+            micro_candidates = []
+            for my1 in ys_micro:
+                my2 = min(H, my1 + tile_h_micro)
+                for mx1 in xs_micro:
+                    mx2 = min(W, mx1 + tile_w_micro)
+                    m_crop = frame[my1:my2, mx1:mx2]
+                    gray = cv2.cvtColor(m_crop, cv2.COLOR_BGR2GRAY)
+                    variance = float(np.var(gray))
+                    micro_candidates.append((variance, [int(mx1), int(my1), int(mx2), int(my2)], m_crop))
+
+            # Select top-12 most salient micro tiles by visual texture/contrast
+            micro_candidates.sort(key=lambda x: x[0], reverse=True)
+            for _, m_bbox, m_crop in micro_candidates[:12]:
+                tiles.append((tile_idx, m_bbox, m_crop))
+                tile_idx += 1
+
         return tiles
 
     def extract_and_index_scenes_for_camera(

@@ -253,9 +253,10 @@ class SearchLayer:
         
         obj_filters = dict(search_filters)
         if entity_type is not None and "entity_type" not in obj_filters:
-            obj_filters["entity_type"] = entity_type
+            if entity_type != "object":
+                obj_filters["entity_type"] = entity_type
 
-        is_identity_query = entity_type in ["person", "vehicle"]
+        is_identity_query = (entity_type == "person")
 
         index_info = self.vector.describe_visual_index(obj_filters)
         scene_info = self.vector.describe_scene_index(search_filters) if (hasattr(self.vector, "describe_scene_index") and not is_identity_query) else {"total": 0}
@@ -290,19 +291,20 @@ class SearchLayer:
         vector_matches: List[Dict[str, Any]] = []
         seen_ids = set()
 
-        # Global candidate retrieval across investigation scope (CLIP visual)
-        global_vis = self.vector.query_visual_embeddings(
-            query_embedding=query_embedding,
-            top_k=candidate_k,
-            filters=obj_filters
-        )
-        for cr in global_vis:
-            c_id = cr.get("metadata", {}).get("camera_id")
-            if allowed_camera_ids and c_id and c_id not in allowed_camera_ids:
-                continue
-            if cr["id"] not in seen_ids:
-                seen_ids.add(cr["id"])
-                vector_matches.append(cr)
+        if entity_type not in ["scene", "region"]:
+            # Global candidate retrieval across investigation scope (CLIP visual)
+            global_vis = self.vector.query_visual_embeddings(
+                query_embedding=query_embedding,
+                top_k=candidate_k,
+                filters=obj_filters
+            )
+            for cr in global_vis:
+                c_id = cr.get("metadata", {}).get("camera_id")
+                if allowed_camera_ids and c_id and c_id not in allowed_camera_ids:
+                    continue
+                if cr["id"] not in seen_ids:
+                    seen_ids.add(cr["id"])
+                    vector_matches.append(cr)
 
         # Re-ID candidate retrieval and candidate expansion for person queries
         reid_scores_by_track: Dict[str, float] = {}
@@ -424,11 +426,12 @@ class SearchLayer:
 
         for match in obj_results:
             match["match_type"] = "object"
+            match["source_type"] = "object"
             match["diagnostic_label"] = "Object match"
 
         # Stage 3: Candidate Retrieval for Scene Keyframes (Full Frames)
         scene_results: List[Dict[str, Any]] = []
-        if hasattr(self.vector, "scene_coll") and not is_identity_query:
+        if hasattr(self.vector, "scene_coll") and entity_type not in ["person", "region"]:
             scene_filters = {}
             if job_id:
                 scene_filters["job_id"] = job_id
@@ -517,6 +520,7 @@ class SearchLayer:
                     "attribute_score": 1.0,
                     "quality_score": 1.0,
                     "entity_type": "scene",
+                    "source_type": "scene",
                     "match_type": "scene",
                     "diagnostic_label": "Scene keyframe match",
                     "job_id": s_meta.get("job_id"),
@@ -547,7 +551,7 @@ class SearchLayer:
 
         # Stage 3b: Candidate Retrieval for Spatial Regions / Tiles
         region_results: List[Dict[str, Any]] = []
-        if hasattr(self.vector, "region_coll") and not is_identity_query:
+        if hasattr(self.vector, "region_coll") and entity_type not in ["person", "scene"]:
             region_filters = {}
             if job_id:
                 region_filters["job_id"] = job_id
@@ -651,6 +655,7 @@ class SearchLayer:
                     "attribute_score": 1.0,
                     "quality_score": 1.0,
                     "entity_type": "region",
+                    "source_type": "region",
                     "match_type": "region",
                     "diagnostic_label": "Region tile match",
                     "job_id": r_meta.get("job_id"),
@@ -937,8 +942,13 @@ class SearchLayer:
                 continue
             
             # Hard rejection: wrong entity type (safety net beyond ChromaDB filter)
-            if expected_entity_type and track["entity_type"] != expected_entity_type:
-                continue
+            if expected_entity_type:
+                if expected_entity_type == "person" and track["entity_type"] != "person":
+                    continue
+                elif expected_entity_type == "vehicle" and track["entity_type"] != "vehicle":
+                    continue
+                elif expected_entity_type == "object" and track["entity_type"] == "person":
+                    continue
                 
             # Query camera video source
             camera_recs = self.sqlite.get_cameras_by_job(track["job_id"])

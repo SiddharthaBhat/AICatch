@@ -277,15 +277,76 @@ class VectorDatabase:
         top_k: int = 30,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Search the spatial region/tile collection for matching regional visual vectors."""
+        """Search the spatial region/tile collection for matching regional visual vectors.
+
+        Includes robust multi-level fallback against ChromaDB where-filter indexing issues
+        on large collections.
+        """
         where = self._build_where_filter(filters)
-        results = self.region_coll.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where,
-            include=["metadatas", "distances"]
-        )
-        return self._format_results(results)
+        try:
+            results = self.region_coll.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=where,
+                include=["metadatas", "distances"]
+            )
+            return self._format_results(results)
+        except Exception as err:
+            LOGGER.warning(
+                "Primary ChromaDB region query failed with where=%s: %s. Attempting resilient fallback...",
+                where, err
+            )
+
+            # Fallback 1: If complex $and filter failed, try individual sub-conditions + in-memory filtering
+            if where and "$and" in where:
+                for sub_cond in where["$and"]:
+                    try:
+                        results = self.region_coll.query(
+                            query_embeddings=[query_embedding],
+                            n_results=max(50, top_k * 3),
+                            where=sub_cond,
+                            include=["metadatas", "distances"]
+                        )
+                        formatted = self._format_results(results)
+                        filtered = []
+                        for item in formatted:
+                            meta = item.get("metadata", {})
+                            match = True
+                            for k, v in (filters or {}).items():
+                                if v is not None and meta.get(k) != v:
+                                    match = False
+                                    break
+                            if match:
+                                filtered.append(item)
+                        if filtered:
+                            return filtered[:top_k]
+                    except Exception as sub_err:
+                        LOGGER.debug("Sub-filter %s failed: %s", sub_cond, sub_err)
+
+            # Fallback 2: Unconstrained nearest-neighbor query + in-memory metadata filtering
+            try:
+                coll_total = self.region_coll.count()
+                wider_k = min(coll_total, max(150, top_k * 5))
+                if wider_k > 0:
+                    raw_res = self.region_coll.query(
+                        query_embeddings=[query_embedding],
+                        n_results=wider_k,
+                        include=["metadatas", "distances"]
+                    )
+                    formatted = self._format_results(raw_res)
+                    if not filters:
+                        return formatted[:top_k]
+
+                    matched = []
+                    for item in formatted:
+                        meta = item.get("metadata", {})
+                        if all(meta.get(k) == v for k, v in filters.items() if v is not None):
+                            matched.append(item)
+                    return matched[:top_k]
+            except Exception as f2_err:
+                LOGGER.error("Fallback ChromaDB region query failed: %s", f2_err)
+
+            return []
 
     def describe_region_index(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Return aggregate index facts for spatial region tiles."""
@@ -350,6 +411,29 @@ class VectorDatabase:
             include=["metadatas", "distances"]
         )
         return self._format_results(results)
+
+    def describe_reid_index(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return aggregate index facts for Person Re-ID vectors."""
+        where = self._build_where_filter(filters)
+        try:
+            records = self.reid_coll.get(where=where, include=["metadatas"], limit=500)
+            metadatas = records.get("metadatas", [])
+            total = self.reid_coll.count() if not filters else len(metadatas)
+        except Exception:
+            metadatas = []
+            total = 0
+        by_camera: Dict[str, int] = {}
+        for meta in metadatas:
+            camera = meta.get("camera_id", "unknown")
+            by_camera[camera] = by_camera.get(camera, 0) + 1
+        return {
+            "collection": self.reid_coll.name,
+            "total": total,
+            "by_camera": by_camera,
+            "embedding_dimensions": [512],
+            "embedding_model": "osnet_x1_0",
+            "embedding_version": "v1"
+        }
 
     def add_face_embeddings(
         self,

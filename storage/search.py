@@ -67,6 +67,93 @@ def parse_query_text(query: Optional[str]) -> Dict[str, Any]:
         "is_disallowed": is_disallowed
     }
 
+def cluster_and_diversify_occurrences(
+    results: List[Dict[str, Any]],
+    temporal_window_sec: float = 12.0,
+    top_k: int = 20
+) -> List[Dict[str, Any]]:
+    """Groups adjacent keyframe/observation matches on the same camera into temporal occurrence episodes,
+    and applies camera-fair interleaving to prevent single-camera monopolization while preserving all raw observations
+    for forensic drill-down."""
+    if not results:
+        return []
+
+    # 1. Group results by camera
+    by_camera: Dict[str, List[Dict[str, Any]]] = {}
+    for item in results:
+        cam_id = item.get("camera_id") or "unknown_cam"
+        by_camera.setdefault(cam_id, []).append(item)
+
+    camera_clusters: Dict[str, List[Dict[str, Any]]] = {}
+
+    # 2. For each camera, sort by timestamp and form temporal clusters
+    for cam_id, cam_items in by_camera.items():
+        sorted_items = sorted(cam_items, key=lambda x: float(x.get("timestamp", 0.0)))
+        clusters: List[List[Dict[str, Any]]] = []
+        current_cluster: List[Dict[str, Any]] = []
+
+        for item in sorted_items:
+            t = float(item.get("timestamp", 0.0))
+            if not current_cluster:
+                current_cluster.append(item)
+            else:
+                prev_t = float(current_cluster[-1].get("timestamp", 0.0))
+                # Group if adjacent within temporal window on same camera
+                if abs(t - prev_t) <= temporal_window_sec:
+                    current_cluster.append(item)
+                else:
+                    clusters.append(current_cluster)
+                    current_cluster = [item]
+        if current_cluster:
+            clusters.append(current_cluster)
+
+        # 3. For each cluster, pick representative item (highest similarity/score) and attach occurrence metadata
+        rep_occurrences: List[Dict[str, Any]] = []
+        for c_idx, cluster in enumerate(clusters):
+            sorted_by_score = sorted(
+                cluster,
+                key=lambda x: (x.get("rrf_score") or x.get("similarity") or 0.0),
+                reverse=True
+            )
+            rep_item = dict(sorted_by_score[0])
+
+            timestamps = [float(x.get("timestamp", 0.0)) for x in cluster]
+            start_t = min(timestamps)
+            end_t = max(timestamps)
+
+            occ_id = f"occ_{cam_id}_{int(start_t)}_{int(end_t)}_{c_idx}"
+            rep_item["occurrence_id"] = occ_id
+            rep_item["occurrence_start"] = round(start_t, 2)
+            rep_item["occurrence_end"] = round(end_t, 2)
+            rep_item["occurrence_duration"] = round(end_t - start_t, 2)
+            rep_item["occurrence_count"] = len(cluster)
+            rep_item["occurrence_observations"] = cluster
+
+            rep_occurrences.append(rep_item)
+
+        rep_occurrences.sort(
+            key=lambda x: (x.get("rrf_score") or x.get("similarity") or 0.0),
+            reverse=True
+        )
+        camera_clusters[cam_id] = rep_occurrences
+
+    # 4. Multi-camera fair interleaving (Round-Robin with score priority)
+    diversified: List[Dict[str, Any]] = []
+    camera_queues = [list(occ_list) for occ_list in camera_clusters.values() if occ_list]
+
+    while camera_queues and len(diversified) < top_k:
+        camera_queues.sort(
+            key=lambda q: (q[0].get("rrf_score") or q[0].get("similarity") or 0.0),
+            reverse=True
+        )
+        best_queue = camera_queues[0]
+        diversified.append(best_queue.pop(0))
+        if not best_queue:
+            camera_queues.pop(0)
+
+    return diversified[:top_k]
+
+
 class SearchLayer:
     def __init__(self, sqlite_db: SQLiteDatabase, vector_db: VectorDatabase, media_storage: MediaStorage):
         self.sqlite = sqlite_db
@@ -203,7 +290,7 @@ class SearchLayer:
         vector_matches: List[Dict[str, Any]] = []
         seen_ids = set()
 
-        # Global candidate retrieval across investigation scope
+        # Global candidate retrieval across investigation scope (CLIP visual)
         global_vis = self.vector.query_visual_embeddings(
             query_embedding=query_embedding,
             top_k=candidate_k,
@@ -217,11 +304,7 @@ class SearchLayer:
                 seen_ids.add(cr["id"])
                 vector_matches.append(cr)
 
-        vector_matches.sort(key=lambda x: float(x["similarity"]), reverse=True)
-        diagnostics["raw_candidate_count"] = len(vector_matches)
-        diagnostics["raw_top_scores"] = [round(float(match["similarity"]), 4) for match in vector_matches[:10]]
-        
-        # Optional Re-ID Query for RRF Rank Fusion
+        # Re-ID candidate retrieval and candidate expansion for person queries
         reid_scores_by_track: Dict[str, float] = {}
         reid_ranks_by_track: Dict[str, int] = {}
         if enable_rrf and reid_embedding is not None:
@@ -242,6 +325,11 @@ class SearchLayer:
                     if cr["id"] not in seen_r_ids:
                         seen_r_ids.add(cr["id"])
                         reid_matches.append(cr)
+
+                    # Bi-directional candidate expansion: include Re-ID candidates directly in vector_matches
+                    if cr["id"] not in seen_ids:
+                        seen_ids.add(cr["id"])
+                        vector_matches.append(cr)
 
                 # Candidate Completeness: ensure Re-ID evidence is present for visual candidate tracks
                 import numpy as np
@@ -293,6 +381,10 @@ class SearchLayer:
             except Exception as re_err:
                 LOGGER.debug(f"Re-ID collection query note: {re_err}")
 
+        vector_matches.sort(key=lambda x: float(x["similarity"]), reverse=True)
+        diagnostics["raw_candidate_count"] = len(vector_matches)
+        diagnostics["raw_top_scores"] = [round(float(match["similarity"]), 4) for match in vector_matches[:10]]
+
         # Stage 2: Inflate and Re-rank Object Matches
         obj_results, below_threshold = self._inflate_metadata_and_re_rank_with_below_gate(
             vector_matches,
@@ -300,16 +392,19 @@ class SearchLayer:
             is_face=False,
             threshold=IMAGE_MATCH_THRESHOLD,
             final_score_threshold=FINAL_SCORE_MIN_IMAGE if strict_gate else 0.0,
-            expected_entity_type=entity_type
+            expected_entity_type=entity_type,
+            reid_scores_by_track=reid_scores_by_track if reid_scores_by_track else None
         )
 
         # Apply Reciprocal Rank Fusion (RRF) on object results if enabled
         if enable_rrf and reid_ranks_by_track:
+            effective_reid_weight = 0.6 if entity_type == "person" else reid_weight
+            effective_clip_weight = 0.4 if entity_type == "person" else clip_weight
             for c_rank, match in enumerate(obj_results, start=1):
                 t_id = match.get("track_id")
-                clip_rrf = clip_weight / (rrf_k + c_rank)
+                clip_rrf = effective_clip_weight / (rrf_k + c_rank)
                 r_rank = reid_ranks_by_track.get(t_id, candidate_k + 1)
-                reid_rrf = reid_weight / (rrf_k + r_rank)
+                reid_rrf = effective_reid_weight / (rrf_k + r_rank)
                 rrf_score = round(clip_rrf + reid_rrf, 5)
 
                 reid_sim = reid_scores_by_track.get(t_id)
@@ -611,7 +706,12 @@ class SearchLayer:
                     diagnostics["search_state"], len(obj_results), len(region_results), len(scene_results), diagnostics)
 
         self.last_below_threshold_results = below_threshold[:top_k]
-        return all_results[:top_k]
+        diversified_results = cluster_and_diversify_occurrences(
+            all_results,
+            temporal_window_sec=12.0,
+            top_k=top_k
+        )
+        return diversified_results
 
 
     def search_by_face(
@@ -721,7 +821,8 @@ class SearchLayer:
         query_action: Optional[str] = None,
         threshold: float = 0.0,
         final_score_threshold: float = 0.0,
-        expected_entity_type: Optional[str] = None
+        expected_entity_type: Optional[str] = None,
+        reid_scores_by_track: Optional[Dict[str, float]] = None
     ) -> List[Dict[str, Any]]:
         """Combines ChromaDB vector distances with SQLite metadata and performs transparent hybrid scoring & track-level deduplication."""
         if is_face:
@@ -821,9 +922,13 @@ class SearchLayer:
             # --- Scoring & Re-ranking Algorithm ---
             # 1. Semantic Similarity Score (from ChromaDB)
             semantic_score = float(match["similarity"])
+            reid_sim = reid_scores_by_track.get(track_uuid) if reid_scores_by_track else None
+
+            # For person search with Re-ID, allow strong Re-ID similarity to satisfy threshold
+            effective_sim = max(semantic_score, reid_sim) if reid_sim is not None else semantic_score
             
             # Enforce verified match threshold to prevent low-similarity false positives (Section 13)
-            if semantic_score < threshold:
+            if effective_sim < threshold:
                 continue
                 
             # Query SQLite for full track and detection info
@@ -907,7 +1012,8 @@ class SearchLayer:
             ]
             
             # Fetch generated context clip path
-            clip_path = self.media.get_clip_path(track["job_id"], track["camera_id"], track["track_id"])
+            t_id_val = track.get("track_id") or track.get("id") or track_uuid
+            clip_path = self.media.get_clip_path(track["job_id"], track["camera_id"], t_id_val)
             
             # 3. Attribute / Color Agreement Score
             if query_colors:
@@ -1026,7 +1132,8 @@ class SearchLayer:
         query_action: Optional[str] = None,
         threshold: float = 0.0,
         final_score_threshold: float = 0.0,
-        expected_entity_type: Optional[str] = None
+        expected_entity_type: Optional[str] = None,
+        reid_scores_by_track: Optional[Dict[str, float]] = None
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Separates candidates into passed results and below-threshold (low confidence) results."""
         all_candidates = self._inflate_metadata_and_re_rank(
@@ -1036,12 +1143,20 @@ class SearchLayer:
             query_action=query_action,
             threshold=0.0,
             final_score_threshold=0.0,
-            expected_entity_type=expected_entity_type
+            expected_entity_type=expected_entity_type,
+            reid_scores_by_track=reid_scores_by_track
         )
         passed = []
         below = []
         for cand in all_candidates:
-            if cand["similarity"] >= final_score_threshold and cand.get("semantic_score", 0.0) >= threshold:
+            # Check if candidate satisfies visual similarity or Re-ID similarity threshold
+            t_uuid = cand.get("track_id")
+            t_reid_sim = reid_scores_by_track.get(t_uuid) if (reid_scores_by_track and t_uuid) else cand.get("reid_similarity")
+            effective_sim = max(cand.get("semantic_score", 0.0), t_reid_sim or 0.0)
+
+            if cand["similarity"] >= final_score_threshold and effective_sim >= threshold:
+                passed.append(cand)
+            elif t_reid_sim is not None and t_reid_sim >= threshold:
                 passed.append(cand)
             else:
                 low_cand = dict(cand)
@@ -1049,6 +1164,6 @@ class SearchLayer:
                 low_cand["status"] = "BELOW_THRESHOLD"
                 low_cand["diagnostic_label"] = "Below Relevance Threshold"
                 below.append(low_cand)
-                
+
         return passed, below
 

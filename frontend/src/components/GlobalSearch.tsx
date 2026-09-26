@@ -175,18 +175,18 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
                   ) : (
                     <User size={36} style={{ color: "var(--text-muted)" }} />
                   )}
-                  {res.match_type && (
+                  {(res.source_type || res.match_type) && (
                     <div style={{ position: "absolute", top: "6px", left: "6px" }}>
                       <span style={{
                         fontSize: "9px",
                         fontWeight: "700",
                         padding: "2px 6px",
                         borderRadius: "4px",
-                        backgroundColor: res.match_type === "scene" ? "rgba(59, 130, 246, 0.85)" : "rgba(16, 185, 129, 0.85)",
+                        backgroundColor: (res.source_type === "scene" || res.match_type === "scene") ? "rgba(59, 130, 246, 0.85)" : ((res.source_type === "region" || res.match_type === "region") ? "rgba(245, 158, 11, 0.85)" : "rgba(16, 185, 129, 0.85)"),
                         color: "#ffffff",
                         textTransform: "uppercase"
                       }}>
-                        {res.match_type === "scene" ? "Scene Match" : "Object Match"}
+                        {(res.source_type === "scene" || res.match_type === "scene") ? "Scene Match" : ((res.source_type === "region" || res.match_type === "region") ? "Region Match" : "Object Match")}
                       </span>
                     </div>
                   )}
@@ -201,7 +201,7 @@ export const GlobalSearch: React.FC<GlobalSearchProps> = ({ jobs, onOpenInvestig
                     {res.camera_name || res.camera_id || "Camera"}
                   </div>
                   <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                    Timestamp: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"} · Similarity: {res.similarity.toFixed(2)}
+                    Timestamp: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"} · Cosine Sim: {typeof res.similarity === "number" ? res.similarity.toFixed(2) : "N/A"}
                   </div>
                 </div>
 

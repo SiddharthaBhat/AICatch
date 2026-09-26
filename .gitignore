@@ -379,3 +379,8 @@ aicatch_index.db
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Runtime logs and scratch scripts
+logs/
+scratch/
+

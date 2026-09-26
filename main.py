@@ -28,7 +28,7 @@ import uvicorn
 from config import SQLITE_DB_PATH, CHROMA_PERSIST_DIR, MEDIA_DIR, UPLOAD_DIR, SEARCH_DEBUG
 from storage import SQLiteDatabase, VectorDatabase, MediaStorage, SearchLayer
 from storage.search import VisualIndexEmptyError
-from pipeline import JobManager, GPUScheduler, ActiveQueryMatcher, ResultDispatcher, JourneyEngine
+from pipeline import JobManager, GPUScheduler, ActiveQueryMatcher, ResultDispatcher, JourneyEngine, StitchEngine
 from utils.monitor import PerformanceMonitorInstance
 
 # Set up logging
@@ -43,6 +43,7 @@ vector_db = VectorDatabase(CHROMA_PERSIST_DIR)
 media_storage = MediaStorage()
 search_layer = SearchLayer(sqlite_db, vector_db, media_storage)
 journey_engine = JourneyEngine(sqlite_db, vector_db)
+stitch_engine = StitchEngine(sqlite_db, vector_db, media_storage)
 
 matcher = ActiveQueryMatcher()
 dispatcher = ResultDispatcher(sqlite_db, vector_db, matcher)
@@ -1160,7 +1161,7 @@ def delete_saved_person(person_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================================================
-# 8. REST Route Handlers: Journey Reconstruction Engine
+# 8. REST Route Handlers: Journey & Cross-Camera Evidence Stitch Engine
 # ==============================================================================
 @app.get("/api/jobs/{job_id}/journey/{track_uuid}")
 def get_track_journey(job_id: str, track_uuid: str, similarity: float = 0.70):
@@ -1169,6 +1170,65 @@ def get_track_journey(job_id: str, track_uuid: str, similarity: float = 0.70):
             target_track_uuid=track_uuid,
             similarity_threshold=similarity
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class StitchRequest(BaseModel):
+    observations: Optional[List[Dict[str, Any]]] = None
+    search_results: Optional[List[Dict[str, Any]]] = None
+    target_track_uuid: Optional[str] = None
+    entity_type: str = "person"
+    camera_graph: Optional[Dict[str, List[str]]] = None
+    min_similarity: float = 0.45
+    temporal_window_sec: float = 12.0
+    max_transit_sec: float = 600.0
+
+class CameraTopologyRequest(BaseModel):
+    camera_graph: Dict[str, List[str]]
+
+@app.post("/api/investigations/{job_id}/stitch")
+@app.post("/api/jobs/{job_id}/stitch")
+def reconstruct_investigation_stitch(job_id: str, req: StitchRequest):
+    """Reconstructs cross-camera evidence journey using StitchEngine."""
+    try:
+        res = stitch_engine.reconstruct_stitch(
+            job_id=job_id,
+            observations=req.observations,
+            search_results=req.search_results,
+            target_track_uuid=req.target_track_uuid,
+            entity_type=req.entity_type,
+            camera_graph=req.camera_graph,
+            min_similarity=req.min_similarity,
+            temporal_window_sec=req.temporal_window_sec,
+            max_transit_sec=req.max_transit_sec
+        )
+        return res.to_dict()
+    except Exception as e:
+        LOGGER.error(f"Failed to reconstruct evidence stitch for {job_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/investigations/{job_id}/stitch/{track_uuid}")
+@app.get("/api/jobs/{job_id}/stitch/{track_uuid}")
+def get_track_stitch(job_id: str, track_uuid: str, similarity: float = 0.45, entity_type: str = "person"):
+    """Convenience endpoint reconstructing cross-camera stitch for a specific track ID."""
+    try:
+        res = stitch_engine.reconstruct_stitch(
+            job_id=job_id,
+            target_track_uuid=track_uuid,
+            entity_type=entity_type,
+            min_similarity=similarity
+        )
+        return res.to_dict()
+    except Exception as e:
+        LOGGER.error(f"Failed to get track stitch for {track_uuid}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/{job_id}/camera-topology")
+def set_job_camera_topology(job_id: str, req: CameraTopologyRequest):
+    """Configures optional camera adjacency topology for an investigation."""
+    try:
+        stitch_engine.set_job_camera_topology(job_id, req.camera_graph)
+        return {"status": "configured", "job_id": job_id, "camera_graph": req.camera_graph}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

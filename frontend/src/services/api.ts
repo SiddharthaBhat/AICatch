@@ -1,4 +1,4 @@
-import type { Job, Camera, Track, Detection, SavedPerson, ActiveQuery } from "../types";
+import type { Job, Camera, Track, Detection, SavedPerson, ActiveQuery, StitchResult } from "../types";
 
 export const API_BASE_URL = "http://localhost:8000";
 
@@ -274,7 +274,7 @@ export const apiService = {
     return this.deleteAlertRule(queryId);
   },
 
-  // Journey timeline API
+  // Journey timeline API (Legacy)
   async getJourneyTimeline(jobId: string, trackUuid: string, similarity: number = 0.72): Promise<any[]> {
     const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/journey/${encodeURIComponent(trackUuid)}?similarity=${similarity}`);
     if (!res.ok) {
@@ -283,6 +283,50 @@ export const apiService = {
     }
     return res.json();
   },
+
+  // Cross-Camera Evidence Stitching API (Unified)
+  async reconstructStitch(jobId: string, params: {
+    target_entity?: string;
+    track_uuid?: string;
+    observations?: any[];
+    camera_graph?: Record<string, any>;
+    min_continuity_score?: number;
+    max_gap_seconds?: number;
+  }): Promise<StitchResult> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/stitch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to reconstruct stitch evidence" }));
+      throw new Error(err.detail || "Failed to reconstruct stitch evidence");
+    }
+    return res.json();
+  },
+
+  async getStitchByTrack(jobId: string, trackUuid: string, minContinuity: number = 0.45, maxGap: number = 600.0): Promise<StitchResult> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/stitch/${encodeURIComponent(trackUuid)}?min_continuity=${minContinuity}&max_gap=${maxGap}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to retrieve stitch timeline for track" }));
+      throw new Error(err.detail || "Failed to retrieve stitch timeline for track");
+    }
+    return res.json();
+  },
+
+  async setCameraTopology(jobId: string, topology: Record<string, any>): Promise<any> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/camera-topology`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(topology)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to configure camera topology" }));
+      throw new Error(err.detail || "Failed to configure camera topology");
+    }
+    return res.json();
+  },
+
 
   // Evidence Folder API
   async listFolders(jobId?: string): Promise<any[]> {

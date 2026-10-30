@@ -1,0 +1,55 @@
+{
+  "timestamp": "2026-10-30 09:38:53",
+  "video_source": "outside.mp4",
+  "hardware": {
+    "cpu_count": 16,
+    "ram_usage_mb": 661.5,
+    "gpu_available": true,
+    "vram_usage_mb": 0.0
+  },
+  "decoding": {
+    "frames_decoded": 60,
+    "duration_sec": 0.1075,
+    "throughput_fps": 558.35
+  },
+  "sqlite_performance": {
+    "writes_count": 300,
+    "single_writer_individual_sync_sec": 0.0463,
+    "single_writer_individual_sync_wps": 6472.8,
+    "single_writer_batch_sec": 0.0017,
+    "single_writer_batch_wps": 178405.1,
+    "read_latency_mean_ms": 1.567,
+    "read_latency_p50_ms": 1.551,
+    "read_latency_p95_ms": 3.11
+  },
+  "disk_io_performance": {
+    "crop_count": 50,
+    "sync_writes_sec": 0.1394,
+    "sync_writes_fps": 358.7,
+    "async_pool_writes_sec": 0.0647,
+    "async_pool_writes_fps": 773.0,
+    "speedup": 2.15
+  },
+  "chroma_performance": {
+    "vectors_indexed": 100,
+    "upsert_batch_duration_sec": 0.2657,
+    "upsert_vectors_per_sec": 376.4,
+    "search_latency_mean_ms": 4.97,
+    "search_latency_p50_ms": 4.02,
+    "search_latency_p95_ms": 10.4
+  },
+  "stitch_latency": {
+    "observations_count": 15,
+    "stitch_latency_mean_ms": 2.81,
+    "stitch_latency_p50_ms": 1.75,
+    "stitch_latency_p95_ms": 7.66,
+    "reconstructed_segments": 1
+  },
+  "evidence_extraction": {
+    "subclip_extraction_duration_sec": 0.59,
+    "multi_segment_concat_duration_sec": 1.117,
+    "final_file_size_bytes": 178564,
+    "segments_count": 2,
+    "is_playable": true
+  }
+}

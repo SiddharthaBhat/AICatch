@@ -2,50 +2,82 @@
 
 Handles connection pooling, WAL mode settings, relational schemas,
 and thread-safe write/read queries for metadata indexing.
+Routes write mutations through a designated single-writer engine.
 """
 
-import sqlite3
+from __future__ import annotations
+
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
-import time
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from config import SQLITE_DB_PATH
+from storage.sqlite_writer import SQLiteWriteQueue
 
 LOGGER = logging.getLogger(__name__)
 
+
 class SQLiteDatabase:
-    def __init__(self, db_path: Path = SQLITE_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Union[str, Path] = SQLITE_DB_PATH):
+        self.db_path = Path(db_path)
         self.init_db()
+        self.writer = SQLiteWriteQueue(self.db_path, maxsize=2000, busy_timeout=30.0, enable_wal=True)
 
     @contextmanager
     def connection(self):
-        """Context manager for thread-safe SQLite transactions with WAL enabled."""
+        """Context manager for thread-safe SQLite read operations with WAL enabled."""
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=30.0,
             check_same_thread=False
         )
-        # Enable WAL mode and foreign keys
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         try:
             yield conn
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             LOGGER.error(f"SQLite transaction failed: {e}")
             raise e
         finally:
             conn.close()
 
+    def execute_write(
+        self,
+        func: Callable[[sqlite3.Connection], Any],
+        sync: bool = True,
+        timeout: Optional[float] = 30.0,
+        task_name: str = "write"
+    ) -> Any:
+        """Executes a database write task using the dedicated single-writer thread."""
+        return self.writer.execute_write(func, sync=sync, timeout=timeout, task_name=task_name)
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Gracefully closes the database writer thread and drains pending tasks."""
+        if hasattr(self, "writer") and self.writer:
+            self.writer.stop(timeout=timeout)
+
     def init_db(self) -> None:
-        """Initialize all schema tables and indexes."""
+        """Initialize all schema tables, migrations, and indexes."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connection() as conn:
+        conn = sqlite3.connect(
+            str(self.db_path),
+            timeout=30.0,
+            check_same_thread=False
+        )
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        try:
             # 1. Jobs Table
             conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -79,7 +111,7 @@ class SQLiteDatabase:
                 FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
             )""")
 
-            # 3. Frames Table (for downsampled thumbnails)
+            # 3. Frames Table
             conn.execute("""
             CREATE TABLE IF NOT EXISTS frames (
                 id TEXT PRIMARY KEY,
@@ -130,7 +162,7 @@ class SQLiteDatabase:
                 FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
             )""")
 
-            # 6. Saved Persons Table (for named face recognition)
+            # 6. Saved Persons Table
             conn.execute("""
             CREATE TABLE IF NOT EXISTS saved_persons (
                 id TEXT PRIMARY KEY,
@@ -225,11 +257,30 @@ class SQLiteDatabase:
                 created_at REAL NOT NULL
             )""")
 
-            # Migration check for existing databases
-            cursor = conn.execute("PRAGMA table_info(detections)")
-            existing_cols = {row[1] for row in cursor.fetchall()}
+            # 13. Evidence Extractions Table
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS evidence_extractions (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress REAL DEFAULT 0.0,
+                error_msg TEXT,
+                output_path TEXT,
+                manifest_json TEXT,
+                duration_sec REAL DEFAULT 0.0,
+                segments_count INTEGER DEFAULT 0,
+                folder_id TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+            )""")
+
+            # Migration check for existing databases - detections
+            cursor_d = conn.execute("PRAGMA table_info(detections)")
+            existing_cols_d = {row[1] for row in cursor_d.fetchall()}
             
-            new_cols = [
+            new_det_cols = [
                 ("quality_score", "REAL"),
                 ("dominant_upper_color", "TEXT"),
                 ("secondary_upper_color", "TEXT"),
@@ -237,11 +288,16 @@ class SQLiteDatabase:
                 ("secondary_lower_color", "TEXT"),
                 ("color_confidence", "REAL"),
                 ("embedding_model", "TEXT"),
-                ("embedding_version", "TEXT")
+                ("embedding_version", "TEXT"),
+                ("raw_cctv_timestamp", "TEXT"),
+                ("parsed_cctv_timestamp", "TEXT"),
+                ("absolute_timestamp", "TEXT"),
+                ("absolute_epoch", "REAL"),
+                ("timestamp_source", "TEXT"),
+                ("timestamp_status", "TEXT")
             ]
-            
-            for col_name, col_type in new_cols:
-                if col_name not in existing_cols:
+            for col_name, col_type in new_det_cols:
+                if col_name not in existing_cols_d:
                     conn.execute(f"ALTER TABLE detections ADD COLUMN {col_name} {col_type}")
                     LOGGER.info(f"Database Migration: Added column '{col_name}' to 'detections' table.")
 
@@ -261,7 +317,6 @@ class SQLiteDatabase:
             if "diagnostics" not in existing_cols_j:
                 conn.execute("ALTER TABLE jobs ADD COLUMN diagnostics TEXT")
                 LOGGER.info("Database Migration: Added column 'diagnostics' to 'jobs' table.")
-
 
             # Migration check for folders table (job_id column)
             cursor_f = conn.execute("PRAGMA table_info(folders)")
@@ -284,12 +339,33 @@ class SQLiteDatabase:
                 conn.execute("ALTER TABLE active_queries ADD COLUMN job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE")
                 LOGGER.info("Database Migration: Added column 'job_id' to 'active_queries' table.")
 
-            # Migration check for cameras table (checksum column)
+            # Migration check for cameras table
             cursor_c = conn.execute("PRAGMA table_info(cameras)")
             existing_cols_c = {row[1] for row in cursor_c.fetchall()}
             if "checksum" not in existing_cols_c:
                 conn.execute("ALTER TABLE cameras ADD COLUMN checksum TEXT")
                 LOGGER.info("Database Migration: Added column 'checksum' to 'cameras' table.")
+            if "video_id" not in existing_cols_c:
+                conn.execute("ALTER TABLE cameras ADD COLUMN video_id TEXT")
+                LOGGER.info("Database Migration: Added column 'video_id' to 'cameras' table.")
+
+            timestamp_cols = [
+                ("timestamp_config_mode", "TEXT DEFAULT 'automatic'"),
+                ("manual_start_time", "TEXT"),
+                ("clock_offset_sec", "REAL DEFAULT 0.0"),
+                ("detected_start_time", "TEXT"),
+                ("detected_raw_text", "TEXT"),
+                ("detected_source", "TEXT"),
+                ("detected_status", "TEXT"),
+                ("detected_confidence", "REAL DEFAULT 0.0"),
+                ("detected_timezone", "TEXT DEFAULT 'UTC'"),
+                ("effective_start_time", "TEXT"),
+                ("effective_start_epoch", "REAL"),
+            ]
+            for col_name, col_type in timestamp_cols:
+                if col_name not in existing_cols_c:
+                    conn.execute(f"ALTER TABLE cameras ADD COLUMN {col_name} {col_type}")
+                    LOGGER.info(f"Database Migration: Added column '{col_name}' to 'cameras' table.")
 
             # Automatic repair: Associate orphaned folders to jobs based on items
             cursor_f_repair = conn.execute("SELECT id FROM folders WHERE job_id IS NULL")
@@ -316,8 +392,6 @@ class SQLiteDatabase:
                     resolved_job = list(jobs_found)[0]
                     conn.execute("UPDATE folders SET job_id = ? WHERE id = ?", (resolved_job, fid))
                     LOGGER.info(f"Database Migration: Repaired folder '{fid}' by assigning to job '{resolved_job}' based on items.")
-                elif len(jobs_found) > 1:
-                    LOGGER.warning(f"Database Migration: Folder '{fid}' contains mixed data from multiple jobs {jobs_found}. Left unassigned.")
 
             # Performance Indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_detections_track ON detections(track_id)")
@@ -330,33 +404,38 @@ class SQLiteDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_persons_job ON saved_persons(job_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_active_queries_job ON active_queries(job_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cameras_checksum ON cameras(checksum)")
-            
-            # Object-Level Indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_detections_upper_color ON detections(dominant_upper_color)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_detections_entity_type ON detections(entity_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_extractions_job ON evidence_extractions(job_id)")
+
+            conn.commit()
+        finally:
+            conn.close()
 
     # ==============================================================================
-    # Write Methods
+    # Write Methods (Routed through SQLiteSingleWriter)
     # ==============================================================================
 
     def add_job(self, job_id: str, name: str, profile: str, investigation_type: str = "single_video") -> None:
         """Insert a new job metadata record."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO jobs (id, name, status, created_at, updated_at, profile, investigation_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (job_id, name, "queued", now, now, profile, investigation_type)
             )
+        self.execute_write(_task, sync=True, task_name="add_job")
 
     def delete_job(self, job_id: str) -> None:
         """Deletes a job and its associated data from SQLite using cascading deletes."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        self.execute_write(_task, sync=True, task_name="delete_job")
 
     def update_job_status(self, job_id: str, status: str, error_msg: Optional[str] = None, diagnostics: Optional[str] = None) -> None:
         """Update job execution state."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             if diagnostics is not None:
                 conn.execute(
                     "UPDATE jobs SET status = ?, error_msg = ?, diagnostics = ?, updated_at = ? WHERE id = ?",
@@ -367,30 +446,32 @@ class SQLiteDatabase:
                     "UPDATE jobs SET status = ?, error_msg = ?, updated_at = ? WHERE id = ?",
                     (status, error_msg, now, job_id)
                 )
-
+        self.execute_write(_task, sync=True, task_name="update_job_status")
 
     def update_job_progress(self, job_id: str, processed_sec: float, duration_sec: float, fps: float) -> None:
         """Update indexing performance metrics."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "UPDATE jobs SET processed_sec = ?, duration_sec = ?, fps = ?, updated_at = ? WHERE id = ?",
                 (processed_sec, duration_sec, fps, now, job_id)
             )
+        self.execute_write(_task, sync=True, task_name="update_job_progress")
 
     def add_camera(self, camera_id: str, job_id: str, name: str, source_type: str, source_path: str, checksum: Optional[str] = None) -> None:
         """Register a camera source associated with a job."""
         initial_status = "inactive" if source_path else "not_configured"
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
-                "INSERT INTO cameras (id, job_id, name, source_type, source_path, status, checksum) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (camera_id, job_id, name, source_type, source_path, initial_status, checksum)
+                "INSERT INTO cameras (id, job_id, name, source_type, source_path, status, checksum, video_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (camera_id, job_id, name, source_type, source_path, initial_status, checksum, camera_id)
             )
+        self.execute_write(_task, sync=True, task_name="add_camera")
 
     def update_camera_source(self, camera_id: str, source_path: str, name: Optional[str] = None, checksum: Optional[str] = None) -> None:
         """Update camera source path, name, and checksum."""
         status = "inactive" if source_path else "not_configured"
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             if name:
                 conn.execute(
                     "UPDATE cameras SET source_path = ?, name = ?, checksum = ?, status = ? WHERE id = ?",
@@ -401,34 +482,117 @@ class SQLiteDatabase:
                     "UPDATE cameras SET source_path = ?, checksum = ?, status = ? WHERE id = ?",
                     (source_path, checksum, status, camera_id)
                 )
+        self.execute_write(_task, sync=True, task_name="update_camera_source")
 
     def update_camera_metadata(self, camera_id: str, status: str, resolution: str, fps: float) -> None:
         """Update camera parameters after opening source."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "UPDATE cameras SET status = ?, resolution = ?, fps = ? WHERE id = ?",
                 (status, resolution, fps, camera_id)
             )
+        self.execute_write(_task, sync=True, task_name="update_camera_metadata")
+
+    def update_camera_timestamp_config(
+        self,
+        camera_id: str,
+        config_mode: str = "auto",
+        manual_start_time: Optional[str] = None,
+        clock_offset_sec: float = 0.0,
+        effective_start_time: Optional[str] = None,
+        effective_start_epoch: Optional[float] = None,
+        mode: Optional[str] = None
+    ) -> None:
+        """Update investigator timestamp correction settings for a camera."""
+        eff_mode = mode or config_mode
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                """
+                UPDATE cameras
+                SET timestamp_config_mode = ?, manual_start_time = ?, clock_offset_sec = ?,
+                    effective_start_time = ?, effective_start_epoch = ?
+                WHERE id = ?
+                """,
+                (eff_mode, manual_start_time, clock_offset_sec, effective_start_time, effective_start_epoch, camera_id)
+            )
+        self.execute_write(_task, sync=True, task_name="update_camera_timestamp_config")
+
+    def update_job_cameras_timestamp_config(
+        self,
+        job_id: str,
+        config_mode: str = "auto",
+        manual_start_time: Optional[str] = None,
+        clock_offset_sec: float = 0.0,
+        effective_start_time: Optional[str] = None,
+        effective_start_epoch: Optional[float] = None,
+        mode: Optional[str] = None
+    ) -> None:
+        """Apply timestamp correction settings across all cameras in a job scope."""
+        eff_mode = mode or config_mode
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                """
+                UPDATE cameras
+                SET timestamp_config_mode = ?, manual_start_time = ?, clock_offset_sec = ?,
+                    effective_start_time = ?, effective_start_epoch = ?
+                WHERE job_id = ?
+                """,
+                (eff_mode, manual_start_time, clock_offset_sec, effective_start_time, effective_start_epoch, job_id)
+            )
+        self.execute_write(_task, sync=True, task_name="update_job_cameras_timestamp_config")
+
+    def update_camera_detected_timestamp(
+        self,
+        camera_id: str,
+        detected_start_time: Optional[str],
+        detected_raw_text: Optional[str],
+        detected_source: str,
+        detected_status: str,
+        detected_confidence: float = 0.0,
+        detected_timezone: str = "UTC",
+        effective_start_time: Optional[str] = None,
+        effective_start_epoch: Optional[float] = None
+    ) -> None:
+        """Persist automatic timestamp detection results for a camera."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                """
+                UPDATE cameras
+                SET detected_start_time = ?, detected_raw_text = ?, detected_source = ?,
+                    detected_status = ?, detected_confidence = ?, detected_timezone = ?,
+                    effective_start_time = COALESCE(effective_start_time, ?),
+                    effective_start_epoch = COALESCE(effective_start_epoch, ?)
+                WHERE id = ?
+                """,
+                (
+                    detected_start_time, detected_raw_text, detected_source,
+                    detected_status, detected_confidence, detected_timezone,
+                    effective_start_time, effective_start_epoch, camera_id
+                )
+            )
+        self.execute_write(_task, sync=True, task_name="update_camera_detected_timestamp")
 
     def add_frame(self, frame_id: str, camera_id: str, frame_idx: int, timestamp: float, thumbnail_path: str) -> None:
         """Record processed frame mapping."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO frames (id, camera_id, frame_idx, timestamp, thumbnail_path) VALUES (?, ?, ?, ?, ?)",
                 (frame_id, camera_id, frame_idx, timestamp, thumbnail_path)
             )
+        self.execute_write(_task, sync=True, task_name="add_frame")
 
     def add_track(self, track_uuid: str, camera_id: str, job_id: str, track_id: int, entity_type: str, start_time: float) -> None:
         """Register a new tracked entity path."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT OR IGNORE INTO tracks (id, camera_id, job_id, track_id, entity_type, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (track_uuid, camera_id, job_id, track_id, entity_type, start_time, start_time)
             )
+        self.execute_write(_task, sync=True, task_name="add_track")
 
     def update_track_endpoint(self, track_uuid: str, end_time: float, plate_text: Optional[str] = None) -> None:
         """Extend track duration and assign OCR text if available."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             if plate_text:
                 conn.execute(
                     "UPDATE tracks SET end_time = ?, plate_text = ? WHERE id = ?",
@@ -439,54 +603,240 @@ class SQLiteDatabase:
                     "UPDATE tracks SET end_time = ? WHERE id = ?",
                     (end_time, track_uuid)
                 )
+        self.execute_write(_task, sync=True, task_name="update_track_endpoint")
 
-    def add_detections_batch(self, detections: List[Tuple[str, str, int, float, float, float, float, float, str, float, str]]) -> None:
+    def add_detections_batch(self, detections: List[Tuple[Any, ...]]) -> None:
         """Batch save detections to reduce filesystem/transaction load."""
-        with self.connection() as conn:
+        if not detections:
+            return
+        def _task(conn: sqlite3.Connection):
             conn.executemany(
                 "INSERT INTO detections (id, track_id, frame_idx, timestamp, bbox_x1, bbox_y1, bbox_x2, bbox_y2, crop_path, confidence, entity_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 detections
             )
+        self.execute_write(_task, sync=True, task_name="add_detections_batch")
 
     def add_saved_person(self, person_id: str, name: str, face_image_path: str, face_embedding_id: str, job_id: Optional[str] = None) -> None:
         """Save a face profile for custom searches."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO saved_persons (id, job_id, name, face_image_path, face_embedding_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (person_id, job_id, name, face_image_path, face_embedding_id, now)
             )
+        self.execute_write(_task, sync=True, task_name="add_saved_person")
+
+    def delete_saved_person(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """Delete a saved person profile and return their metadata for media cleanup."""
+        def _task(conn: sqlite3.Connection):
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM saved_persons WHERE id = ?", (person_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            record = dict(row)
+            conn.execute("DELETE FROM saved_persons WHERE id = ?", (person_id,))
+            return record
+        return self.execute_write(_task, sync=True, task_name="delete_saved_person")
 
     def add_active_query(self, query_id: str, session_id: str, qtype: str, query_text: Optional[str], query_image_path: Optional[str], query_embedding_id: Optional[str], threshold: float, job_id: Optional[str] = None) -> None:
         """Register active query for same-pass alerting."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO active_queries (id, job_id, session_id, type, query_text, query_image_path, query_embedding_id, similarity_threshold, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
                 (query_id, job_id, session_id, qtype, query_text, query_image_path, query_embedding_id, threshold, now)
             )
+        self.execute_write(_task, sync=True, task_name="add_active_query")
 
     def deactivate_query(self, query_id: str) -> None:
         """Remove alert configuration."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute("UPDATE active_queries SET is_active = 0 WHERE id = ?", (query_id,))
+        self.execute_write(_task, sync=True, task_name="deactivate_query")
+
+    def delete_active_query(self, query_id: str) -> bool:
+        """Permanently delete an active query alert rule."""
+        def _task(conn: sqlite3.Connection):
+            cursor = conn.execute("DELETE FROM active_queries WHERE id = ?", (query_id,))
+            return cursor.rowcount > 0
+        return self.execute_write(_task, sync=True, task_name="delete_active_query")
 
     def add_journey_event(self, event_id: str, job_id: str, track_id: str, camera_id: str, timestamp: float, duration: float, confidence: float) -> None:
         """Record dynamic trajectory sequence event."""
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO journey_events (id, job_id, track_id, camera_id, timestamp, duration, transition_confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (event_id, job_id, track_id, camera_id, timestamp, duration, confidence)
             )
+        self.execute_write(_task, sync=True, task_name="add_journey_event")
 
     def add_perf_stat(self, job_id: str, fps: float, q_depth: int, cpu: float, gpu: float, vram: float, yolo_l: float, clip_l: float, ocr_l: float, face_l: float, db_l: float) -> None:
-        """Record dynamic hardware telemetry stats."""
+        """Record dynamic hardware telemetry stats (asynchronous bounded write)."""
         now = time.time()
-        with self.connection() as conn:
+        def _task(conn: sqlite3.Connection):
             conn.execute(
                 "INSERT INTO perf_stats (job_id, timestamp, processing_fps, queue_depth, cpu_util, gpu_util, vram_used, yolo_lat, clip_lat, ocr_lat, face_lat, db_lat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (job_id, now, fps, q_depth, cpu, gpu, vram, yolo_l, clip_l, ocr_l, face_l, db_l)
             )
+        self.writer.enqueue(_task, sync=False, task_name="add_perf_stat")
+
+    def update_track_label(self, track_uuid: str, label: str) -> None:
+        """Assign or update a user-defined label for a track."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute("UPDATE tracks SET label = ? WHERE id = ?", (label, track_uuid))
+        self.execute_write(_task, sync=True, task_name="update_track_label")
+
+    def create_folder(self, folder_id: str, name: str, description: Optional[str] = None, job_id: Optional[str] = None) -> None:
+        """Create a new investigation folder."""
+        now = time.time()
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT INTO folders (id, job_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+                (folder_id, job_id, name, description, now)
+            )
+        self.execute_write(_task, sync=True, task_name="create_folder")
+
+    def delete_folder(self, folder_id: str) -> None:
+        """Delete an investigation folder (cascades items and notes)."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id = ?", (folder_id,))
+            conn.execute("DELETE FROM folder_items WHERE folder_id = ?", (folder_id,))
+            conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+        self.execute_write(_task, sync=True, task_name="delete_folder")
+
+    def add_folder_item(
+        self,
+        item_id: str,
+        folder_id: str,
+        item_type: str,
+        target_id: Optional[str] = None,
+        metadata: Optional[str] = None,
+        source_id: Optional[str] = None
+    ) -> None:
+        """Add an observation, crop, clip, or event to a folder."""
+        now = time.time()
+        eff_id = target_id or source_id or ""
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO folder_items (id, folder_id, item_type, item_id, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (item_id, folder_id, item_type, eff_id, metadata, now)
+            )
+        self.execute_write(_task, sync=True, task_name="add_folder_item")
+
+    def delete_folder_item(self, folder_id: str, target_id: str) -> None:
+        """Remove a specific item from a folder."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM folder_items WHERE folder_id = ? AND (item_id = ? OR id = ?)", (folder_id, target_id, target_id))
+        self.execute_write(_task, sync=True, task_name="delete_folder_item")
+
+    def add_note(self, note_id: str, parent_type: str, parent_id: str, content: str) -> None:
+        """Save a note against a folder or track."""
+        now = time.time()
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO notes (id, parent_type, parent_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (note_id, parent_type, parent_id, content, now)
+            )
+        self.execute_write(_task, sync=True, task_name="add_note")
+
+    def delete_note(self, note_id: str) -> None:
+        """Remove a note."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        self.execute_write(_task, sync=True, task_name="delete_note")
+
+    # ==============================================================================
+    # Evidence Extraction Job Methods
+    # ==============================================================================
+
+    def add_evidence_extraction(
+        self,
+        extraction_id: str,
+        job_id: str,
+        title: str,
+        folder_id: Optional[str] = None,
+        manifest_json: Optional[str] = None,
+        status: str = "queued"
+    ) -> None:
+        """Create a new evidence extraction job record."""
+        now = time.time()
+        def _task(conn: sqlite3.Connection):
+            conn.execute(
+                """
+                INSERT INTO evidence_extractions (
+                    id, job_id, title, status, progress, manifest_json, folder_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0.0, ?, ?, ?, ?)
+                """,
+                (extraction_id, job_id, title, status, manifest_json, folder_id, now, now)
+            )
+        self.execute_write(_task, sync=True, task_name="add_evidence_extraction")
+
+    def update_evidence_extraction(
+        self,
+        extraction_id: str,
+        status: Optional[str] = None,
+        progress: Optional[float] = None,
+        error_msg: Optional[str] = None,
+        output_path: Optional[str] = None,
+        manifest_json: Optional[str] = None,
+        duration_sec: Optional[float] = None,
+        segments_count: Optional[int] = None
+    ) -> None:
+        """Update extraction status, progress, manifest, or results."""
+        now = time.time()
+        def _task(conn: sqlite3.Connection):
+            updates = ["updated_at = ?"]
+            params: List[Any] = [now]
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            if progress is not None:
+                updates.append("progress = ?")
+                params.append(progress)
+            if error_msg is not None:
+                updates.append("error_msg = ?")
+                params.append(error_msg)
+            if output_path is not None:
+                updates.append("output_path = ?")
+                params.append(output_path)
+            if manifest_json is not None:
+                updates.append("manifest_json = ?")
+                params.append(manifest_json)
+            if duration_sec is not None:
+                updates.append("duration_sec = ?")
+                params.append(duration_sec)
+            if segments_count is not None:
+                updates.append("segments_count = ?")
+                params.append(segments_count)
+            params.append(extraction_id)
+            query = f"UPDATE evidence_extractions SET {', '.join(updates)} WHERE id = ?"
+            conn.execute(query, tuple(params))
+        self.execute_write(_task, sync=True, task_name="update_evidence_extraction")
+
+    def delete_evidence_extraction(self, extraction_id: str) -> None:
+        """Delete an evidence extraction record."""
+        def _task(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM evidence_extractions WHERE id = ?", (extraction_id,))
+        self.execute_write(_task, sync=True, task_name="delete_evidence_extraction")
+
+    def get_evidence_extraction(self, extraction_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a specific evidence extraction record."""
+        with self.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM evidence_extractions WHERE id = ?", (extraction_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_evidence_extractions(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch all evidence extraction records, optionally filtered by job_id."""
+        with self.connection() as conn:
+            conn.row_factory = sqlite3.Row
+            if job_id:
+                cursor = conn.execute("SELECT * FROM evidence_extractions WHERE job_id = ? ORDER BY created_at DESC", (job_id,))
+            else:
+                cursor = conn.execute("SELECT * FROM evidence_extractions ORDER BY created_at DESC")
+            return [dict(row) for row in cursor.fetchall()]
 
     # ==============================================================================
     # Read Methods
@@ -522,7 +872,6 @@ class SQLiteDatabase:
             row = cursor.fetchone()
             return dict(row) if row else None
 
-
     def get_track(self, track_uuid: str) -> Optional[Dict[str, Any]]:
         """Fetch a specific entity path."""
         with self.connection() as conn:
@@ -555,24 +904,6 @@ class SQLiteDatabase:
             cursor = conn.execute("SELECT * FROM saved_persons WHERE id = ?", (person_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
-
-    def delete_saved_person(self, person_id: str) -> Optional[Dict[str, Any]]:
-        """Delete a saved person profile and return their metadata for media cleanup."""
-        with self.connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("SELECT * FROM saved_persons WHERE id = ?", (person_id,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            record = dict(row)
-            conn.execute("DELETE FROM saved_persons WHERE id = ?", (person_id,))
-            return record
-
-    def delete_active_query(self, query_id: str) -> bool:
-        """Permanently delete an active query alert rule."""
-        with self.connection() as conn:
-            cursor = conn.execute("DELETE FROM active_queries WHERE id = ?", (query_id,))
-            return cursor.rowcount > 0
 
     def get_saved_persons(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve saved identity profiles, optionally filtered by job_id."""
@@ -610,7 +941,6 @@ class SQLiteDatabase:
 
     def search_plates(self, query_text: str, camera_filter: Optional[str] = None, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Perform exact/wildcard search on license plates."""
-        # Clean query
         clean = f"%{query_text.upper().strip()}%"
         with self.connection() as conn:
             conn.row_factory = sqlite3.Row
@@ -629,30 +959,6 @@ class SQLiteDatabase:
             cursor = conn.execute(query, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
 
-    # ==============================================================================
-    # Folders, Folder Items, Notes, Labels Methods
-    # ==============================================================================
-    def update_track_label(self, track_uuid: str, label: str) -> None:
-        """Assign or update a user-defined label for a track."""
-        with self.connection() as conn:
-            conn.execute("UPDATE tracks SET label = ? WHERE id = ?", (label, track_uuid))
-
-    def create_folder(self, folder_id: str, name: str, description: Optional[str] = None, job_id: Optional[str] = None) -> None:
-        """Create a new investigation folder."""
-        now = time.time()
-        with self.connection() as conn:
-            conn.execute(
-                "INSERT INTO folders (id, job_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
-                (folder_id, job_id, name, description, now)
-            )
-
-    def delete_folder(self, folder_id: str) -> None:
-        """Delete an investigation folder (cascades items and notes)."""
-        with self.connection() as conn:
-            conn.execute("DELETE FROM notes WHERE parent_type = 'folder' AND parent_id = ?", (folder_id,))
-            conn.execute("DELETE FROM folder_items WHERE folder_id = ?", (folder_id,))
-            conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
-
     def get_folders(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all investigation folders, optionally filtered by job_id."""
         with self.connection() as conn:
@@ -663,40 +969,12 @@ class SQLiteDatabase:
                 cursor = conn.execute("SELECT * FROM folders ORDER BY created_at DESC")
             return [dict(row) for row in cursor.fetchall()]
 
-    def add_folder_item(self, item_id: str, folder_id: str, item_type: str, target_id: str, metadata: Optional[str] = None) -> None:
-        """Add an observation, crop, clip, or event to a folder."""
-        now = time.time()
-        with self.connection() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO folder_items (id, folder_id, item_type, item_id, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (item_id, folder_id, item_type, target_id, metadata, now)
-            )
-
-    def delete_folder_item(self, folder_id: str, target_id: str) -> None:
-        """Remove a specific item from a folder."""
-        with self.connection() as conn:
-            conn.execute("DELETE FROM folder_items WHERE folder_id = ? AND (item_id = ? OR id = ?)", (folder_id, target_id, target_id))
-
     def get_folder_items(self, folder_id: str) -> List[Dict[str, Any]]:
         """Get all items inside a folder."""
         with self.connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("SELECT * FROM folder_items WHERE folder_id = ? ORDER BY created_at ASC", (folder_id,))
             return [dict(row) for row in cursor.fetchall()]
-
-    def add_note(self, note_id: str, parent_type: str, parent_id: str, content: str) -> None:
-        """Save a note against a folder or track."""
-        now = time.time()
-        with self.connection() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO notes (id, parent_type, parent_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                (note_id, parent_type, parent_id, content, now)
-            )
-
-    def delete_note(self, note_id: str) -> None:
-        """Remove a note."""
-        with self.connection() as conn:
-            conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
 
     def get_notes(self, parent_type: str, parent_id: str) -> List[Dict[str, Any]]:
         """Get all notes for a specific folder or track."""

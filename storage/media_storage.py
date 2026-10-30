@@ -11,7 +11,7 @@ import time
 import os
 import queue
 import threading
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Dict
 import cv2
 import numpy as np
 
@@ -28,10 +28,12 @@ THUMBNAIL_QUALITY = 95
 
 class MediaStorage:
     _write_queue: Optional[queue.Queue] = None
-    _writer_thread: Optional[threading.Thread] = None
+    _worker_threads: List[threading.Thread] = []
     _writer_stop: bool = False
     _class_lock: threading.Lock = threading.Lock()
     _created_dirs: set = set()
+    _write_errors: Dict[str, str] = {}
+    _errors_lock: threading.Lock = threading.Lock()
 
     @classmethod
     def _ensure_dir_cached(cls, target_dir: Path) -> None:
@@ -49,25 +51,29 @@ class MediaStorage:
         self._ensure_writer_started()
 
     @classmethod
-    def _ensure_writer_started(cls) -> None:
-        """Starts a shared background disk writer daemon if not already running."""
+    def _ensure_writer_started(cls, num_workers: int = 2) -> None:
+        """Starts a bounded pool of background disk writer daemon threads."""
         with cls._class_lock:
             if cls._write_queue is None:
                 cls._write_queue = queue.Queue(maxsize=2048)
                 cls._writer_stop = False
-                cls._writer_thread = threading.Thread(
-                    target=cls._disk_writer_loop,
-                    daemon=True,
-                    name="MediaStorageWriter"
-                )
-                cls._writer_thread.start()
+                cls._worker_threads = []
+                for i in range(num_workers):
+                    t = threading.Thread(
+                        target=cls._disk_writer_loop,
+                        daemon=True,
+                        name=f"MediaStorageDiskWorker-{i}"
+                    )
+                    t.start()
+                    cls._worker_threads.append(t)
+                LOGGER.info("MediaStorage initialized %d background disk I/O workers (queue maxsize=2048)", num_workers)
 
     @classmethod
     def _disk_writer_loop(cls) -> None:
-        """Background loop that executes cv2.imwrite off the main inference threads."""
+        """Worker thread pulling image write tasks and executing cv2.imwrite off inference threads."""
         while not cls._writer_stop:
             try:
-                task = cls._write_queue.get(timeout=0.5)
+                task = cls._write_queue.get(timeout=0.3)
             except queue.Empty:
                 continue
             if task is None:
@@ -75,8 +81,14 @@ class MediaStorage:
                 break
             dest_path, image_data, encode_params = task
             try:
-                cv2.imwrite(str(dest_path), image_data, encode_params)
+                success = cv2.imwrite(str(dest_path), image_data, encode_params)
+                if not success:
+                    with cls._errors_lock:
+                        cls._write_errors[str(dest_path)] = "cv2.imwrite returned False"
+                    LOGGER.error(f"cv2.imwrite failed to write: {dest_path}")
             except Exception as e:
+                with cls._errors_lock:
+                    cls._write_errors[str(dest_path)] = str(e)
                 LOGGER.error(f"Async disk write error for {dest_path}: {e}")
             finally:
                 cls._write_queue.task_done()
@@ -91,19 +103,46 @@ class MediaStorage:
             if time.time() - start > timeout:
                 LOGGER.warning(f"MediaStorage write queue flush timed out with {cls._write_queue.unfinished_tasks} tasks pending.")
                 return False
-            time.sleep(0.02)
+            time.sleep(0.01)
         return True
 
     @classmethod
+    def wait_for_paths(cls, paths: List[Union[str, Path]], timeout: float = 10.0) -> bool:
+        """Ensures that specific image files are completely written to disk before database commits."""
+        start = time.time()
+        for p in paths:
+            if not p:
+                continue
+            p_obj = Path(p)
+            while not (p_obj.exists() and p_obj.stat().st_size > 0):
+                if time.time() - start > timeout:
+                    LOGGER.warning(f"wait_for_paths timed out waiting for: {p}")
+                    return False
+                time.sleep(0.01)
+        return True
+
+    @classmethod
+    def get_and_clear_write_errors(cls) -> Dict[str, str]:
+        """Returns any recent write errors and resets the error registry."""
+        with cls._errors_lock:
+            errs = cls._write_errors.copy()
+            cls._write_errors.clear()
+            return errs
+
+    @classmethod
     def stop(cls) -> None:
-        """Flushes remaining writes and stops the background writer thread."""
+        """Flushes remaining writes and stops all background writer threads."""
         cls.flush_and_wait(timeout=5.0)
         cls._writer_stop = True
         if cls._write_queue is not None:
-            try:
-                cls._write_queue.put_nowait(None)
-            except Exception:
-                pass
+            for _ in cls._worker_threads:
+                try:
+                    cls._write_queue.put_nowait(None)
+                except Exception:
+                    pass
+        for t in cls._worker_threads:
+            t.join(timeout=2.0)
+        cls._worker_threads.clear()
 
     def ensure_dirs(self) -> None:
         """Create media directory layout."""
@@ -178,8 +217,9 @@ class MediaStorage:
                 raise IOError(f"Failed to write image crop to: {dest_path}")
         else:
             try:
-                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+                self._write_queue.put((dest_path, image_data, encode_params), block=True, timeout=5.0)
             except queue.Full:
+                LOGGER.warning(f"MediaStorage write queue full! Executing synchronous fallback for: {dest_path}")
                 cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
@@ -210,8 +250,9 @@ class MediaStorage:
                 raise IOError(f"Failed to write thumbnail to: {dest_path}")
         else:
             try:
-                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+                self._write_queue.put((dest_path, image_data, encode_params), block=True, timeout=5.0)
             except queue.Full:
+                LOGGER.warning(f"MediaStorage write queue full! Executing synchronous fallback for thumbnail: {dest_path}")
                 cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
@@ -243,8 +284,9 @@ class MediaStorage:
                 raise IOError(f"Failed to write scene keyframe to: {dest_path}")
         else:
             try:
-                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+                self._write_queue.put((dest_path, image_data, encode_params), block=True, timeout=5.0)
             except queue.Full:
+                LOGGER.warning(f"MediaStorage write queue full! Executing synchronous fallback for keyframe: {dest_path}")
                 cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path
@@ -276,8 +318,9 @@ class MediaStorage:
                 raise IOError(f"Failed to write region crop to: {dest_path}")
         else:
             try:
-                self._write_queue.put_nowait((dest_path, image_data, encode_params))
+                self._write_queue.put((dest_path, image_data, encode_params), block=True, timeout=5.0)
             except queue.Full:
+                LOGGER.warning(f"MediaStorage write queue full! Executing synchronous fallback for region: {dest_path}")
                 cv2.imwrite(str(dest_path), image_data, encode_params)
             
         return dest_path

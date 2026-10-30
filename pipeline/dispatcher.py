@@ -233,8 +233,15 @@ class ResultDispatcher:
         
         job_counts: Dict[str, Dict[str, int]] = {}
         
-        # SQLite track updates on a single connection transaction block
-        with self.sqlite.connection() as conn:
+        # Guarantee: Ensure all crop/thumbnail image files in this batch are flushed to disk
+        # before SQLite or ChromaDB persist references to them (Requirement 3.C)
+        try:
+            from storage.media_storage import MediaStorage
+            MediaStorage.flush_and_wait(timeout=10.0)
+        except Exception as media_err:
+            LOGGER.debug("MediaStorage flush check note: %s", media_err)
+
+        def _persist_sqlite_batch(conn):
             for result in batch:
                 job_id = result["job_id"]
                 camera_id = result["camera_id"]
@@ -348,16 +355,22 @@ class ResultDispatcher:
                     })
                     job_counts[job_id]["face"] += 1
                     
-            # Bulk save detections to SQLite (directly execute on conn)
+            # Bulk save detections to SQLite
             start_sqlite = time.time()
-            print("    [STAGE: SQLITE PERSIST] START writing tracks & detections...", flush=True)
             if detections_to_insert:
                 conn.executemany(
                     "INSERT OR REPLACE INTO detections (id, track_id, frame_idx, timestamp, bbox_x1, bbox_y1, bbox_x2, bbox_y2, crop_path, confidence, entity_type, quality_score, dominant_upper_color, secondary_upper_color, dominant_lower_color, secondary_lower_color, color_confidence, embedding_model, embedding_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     detections_to_insert
                 )
             elapsed_sqlite = time.time() - start_sqlite
-            print(f"    [STAGE: SQLITE PERSIST] END writing {len(detections_to_insert)} detections (Elapsed: {elapsed_sqlite:.3f}s)", flush=True)
+            LOGGER.debug(f"[STAGE: SQLITE PERSIST] Wrote {len(detections_to_insert)} detections in {elapsed_sqlite:.3f}s")
+
+        # Execute through single SQLite writer
+        if hasattr(self.sqlite, "execute_write"):
+            self.sqlite.execute_write(_persist_sqlite_batch, sync=True, task_name="dispatcher_flush_batch")
+        else:
+            with self.sqlite.connection() as conn:
+                _persist_sqlite_batch(conn)
 
         start_chroma = time.time()
         print("    [STAGE: CHROMA INSERT] START inserting embeddings...", flush=True)

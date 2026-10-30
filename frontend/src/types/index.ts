@@ -29,6 +29,17 @@ export interface Camera {
   processed_sec?: number;
   duration_sec?: number;
   tracks_count?: number;
+  timestamp_config_mode?: 'auto' | 'automatic' | 'manual_start' | 'clock_offset' | 'manual_offset' | string;
+  manual_start_time?: string | null;
+  clock_offset_sec?: number;
+  detected_start_time?: string | null;
+  detected_raw_text?: string | null;
+  detected_source?: string | null;
+  detected_status?: string | null;
+  detected_confidence?: number | null;
+  detected_timezone?: string | null;
+  effective_start_time?: string | null;
+  effective_start_epoch?: number | null;
 }
 
 export interface Track {
@@ -164,6 +175,13 @@ export interface StitchObservation {
   combined_score?: number | null;
   occurrence_id?: string;
   original_rank?: number;
+  video_timestamp_seconds?: number;
+  absolute_timestamp?: string | null;
+  absolute_epoch?: number | null;
+  raw_cctv_timestamp?: string | null;
+  timestamp_source?: string | null;
+  timestamp_status?: string | null;
+  timezone?: string | null;
   metadata?: Record<string, any>;
 }
 
@@ -181,6 +199,14 @@ export interface StitchSegment {
   observations: StitchObservation[];
   continuity: StitchContinuitySignals;
   provenance: StitchProvenance;
+  absolute_start_time?: string | null;
+  absolute_end_time?: string | null;
+  absolute_start_epoch?: number | null;
+  absolute_end_epoch?: number | null;
+  timestamp_source?: string | null;
+  timestamp_status?: string | null;
+  timezone?: string | null;
+  raw_cctv_timestamp?: string | null;
 }
 
 export interface StitchTransition {
@@ -194,6 +220,8 @@ export interface StitchTransition {
   transit_time_sec: number;
   score: number;
   signals: StitchContinuitySignals;
+  absolute_transit_time_sec?: number | null;
+  chronological_confidence?: string;
 }
 
 export interface StitchResult {
@@ -209,5 +237,90 @@ export interface StitchResult {
   transitions: StitchTransition[];
   camera_diversity: number;
   total_duration_sec: number;
+  chronology_status?: string;
 }
+
+// ==========================================
+// CCTV Timestamp Calibration Types
+// ==========================================
+
+export interface CameraTimestampConfig {
+  camera_id: string;
+  job_id: string;
+  timestamp_config_mode: string;
+  manual_start_time?: string | null;
+  clock_offset_sec: number;
+  detected_start_time?: string | null;
+  detected_raw_text?: string | null;
+  detected_source?: string | null;
+  detected_status?: string | null;
+  detected_confidence?: number | null;
+  detected_timezone?: string | null;
+  effective_start_time?: string | null;
+  effective_start_epoch?: number | null;
+}
+
+export interface TimestampPreviewPayload {
+  mode: 'auto' | 'manual_start' | 'clock_offset';
+  manual_start_time?: string | null;
+  clock_offset_sec?: number;
+}
+
+export interface TimestampConfigPayload {
+  mode: 'auto' | 'manual_start' | 'clock_offset';
+  manual_start_time?: string | null;
+  clock_offset_sec?: number;
+  scope: 'camera' | 'job';
+}
+
+export interface TimestampPreviewResult {
+  mode: string;
+  effective_start_time?: string | null;
+  effective_start_epoch?: number | null;
+  detected_start_time?: string | null;
+  raw_cctv_timestamp?: string | null;
+  samples: Array<{
+    video_seconds: number;
+    absolute_time: string;
+  }>;
+  status: string;
+}
+
+// ==========================================
+// Evidence Extraction Types
+// ==========================================
+
+export interface EvidenceExtraction {
+  id: string;
+  job_id: string;
+  title: string;
+  output_path?: string | null;
+  file_path?: string | null;
+  manifest_path?: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  segments_count: number;
+  processed_segments?: number;
+  total_segments?: number;
+  duration_sec: number;
+  file_size_bytes: number;
+  error_msg?: string | null;
+  error_message?: string | null;
+  created_at: number;
+  completed_at?: number | null;
+  manifest?: any;
+  folder_id?: string | null;
+}
+
+export interface EvidenceExtractionRequest {
+  title?: string;
+  observations?: any[];
+  track_uuids?: string[];
+  context_buffer_sec?: number;
+  buffer_sec?: number;
+  enable_overlay?: boolean;
+  folder_id?: string;
+  folder_name?: string;
+}
+
 

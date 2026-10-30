@@ -3,12 +3,13 @@ import {
   ArrowLeft, Search, FolderOpen, FileText, 
   RotateCcw, RotateCw, Play, Pause, Maximize, Volume2, VolumeX,
   Eye, CheckCircle2, CheckSquare, Square,
-  Film, X, FolderPlus, RefreshCw, AlertCircle
+  Film, X, FolderPlus, RefreshCw, AlertCircle, Clock
 } from "lucide-react";
 import type { Job, Camera } from "../types";
 import { apiService, getMediaUrl } from "../services/api";
 import { Evidence } from "./Evidence";
 import { SubjectSummaryModal } from "./SubjectSummaryModal";
+import { CameraTimestampModal } from "./CameraTimestampModal";
 
 interface SingleVideoWorkspaceProps {
   jobId: string;
@@ -19,6 +20,7 @@ export const SingleVideoWorkspace: React.FC<SingleVideoWorkspaceProps> = ({ jobI
   const [activeTab, setActiveTab] = useState<"workspace" | "evidence" | "summary">("workspace");
   const [job, setJob] = useState<Job | null>(null);
   const [camera, setCamera] = useState<Camera | null>(null);
+  const [showTimestampModal, setShowTimestampModal] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
 
   // Video Player state
@@ -262,6 +264,16 @@ export const SingleVideoWorkspace: React.FC<SingleVideoWorkspaceProps> = ({ jobI
               </span>
               <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                 · Camera: <strong>{camera.name}</strong> ({camera.source_path.split("/").pop()})
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowTimestampModal(true)}
+                  style={{ fontSize: "10px", padding: "2px 6px", display: "inline-flex", alignItems: "center", gap: "3px", marginLeft: "6px" }}
+                  title="Configure CCTV timestamp detection and manual correction"
+                >
+                  <Clock size={10} />
+                  {camera.timestamp_config_mode && camera.timestamp_config_mode !== 'auto' ? 'Calibrated' : 'Timestamps'}
+                </button>
               </span>
             </div>
           </div>
@@ -998,6 +1010,24 @@ export const SingleVideoWorkspace: React.FC<SingleVideoWorkspaceProps> = ({ jobI
           onOpenVideo={(obs) => {
             setShowSummaryModal(false);
             seekToTimestamp(obs.timestamp, obs.track_id);
+          }}
+        />
+      )}
+
+      {/* CCTV Timestamp Configuration Modal */}
+      {showTimestampModal && camera && (
+        <CameraTimestampModal
+          jobId={jobId}
+          camera={camera}
+          isOpen={showTimestampModal}
+          onClose={() => setShowTimestampModal(false)}
+          onConfigSaved={async () => {
+            try {
+              const cams = await apiService.getJobCameras(jobId);
+              if (cams.length > 0) setCamera(cams[0]);
+            } catch (e) {
+              console.error("Failed to reload camera after timestamp calibration:", e);
+            }
           }}
         />
       )}

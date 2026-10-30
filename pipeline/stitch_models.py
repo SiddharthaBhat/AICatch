@@ -81,7 +81,18 @@ class StitchObservation:
     combined_score: Optional[float] = None
     occurrence_id: Optional[str] = None
     original_rank: Optional[int] = None
+    video_timestamp_seconds: float = 0.0
+    absolute_timestamp: Optional[str] = None
+    absolute_epoch: Optional[float] = None
+    raw_cctv_timestamp: Optional[str] = None
+    timestamp_source: Optional[str] = None
+    timestamp_status: Optional[str] = None
+    timezone: Optional[str] = "UTC"
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.video_timestamp_seconds == 0.0 and self.timestamp != 0.0:
+            self.video_timestamp_seconds = self.timestamp
 
     @classmethod
     def from_search_result(cls, r: Dict[str, Any], default_job_id: str = "", rank: int = 0) -> "StitchObservation":
@@ -90,6 +101,7 @@ class StitchObservation:
         cam_id = str(r.get("camera_id") or "unknown_cam")
         t_start = float(r.get("timestamp") or r.get("start_time") or r.get("occurrence_start") or 0.0)
         t_end = float(r.get("end_timestamp") or r.get("end_time") or r.get("occurrence_end") or t_start)
+        v_sec = float(r.get("video_timestamp_seconds") or t_start)
         
         # Bbox extraction
         bbox = r.get("bbox")
@@ -125,6 +137,13 @@ class StitchObservation:
             combined_score=float(r.get("confidence") or r.get("similarity") or 0.0),
             occurrence_id=r.get("occurrence_id"),
             original_rank=rank,
+            video_timestamp_seconds=v_sec,
+            absolute_timestamp=r.get("absolute_timestamp"),
+            absolute_epoch=float(r["absolute_epoch"]) if r.get("absolute_epoch") is not None else None,
+            raw_cctv_timestamp=r.get("raw_cctv_timestamp"),
+            timestamp_source=r.get("timestamp_source"),
+            timestamp_status=r.get("timestamp_status"),
+            timezone=r.get("timezone") or "UTC",
             metadata={k: v for k, v in r.items() if k not in (
                 "id", "job_id", "camera_id", "timestamp", "bbox", "crop_path", "similarity", "reid_similarity"
             )}
@@ -138,7 +157,10 @@ class StitchObservation:
             d["reid_similarity"] = round(self.reid_similarity, 4)
         if self.combined_score is not None:
             d["combined_score"] = round(self.combined_score, 4)
+        if self.absolute_epoch is not None:
+            d["absolute_epoch"] = round(self.absolute_epoch, 3)
         return d
+
 
 
 @dataclass
@@ -157,6 +179,14 @@ class StitchSegment:
     observations: List[StitchObservation]
     continuity: StitchContinuitySignals
     provenance: StitchProvenance
+    absolute_start_time: Optional[str] = None
+    absolute_end_time: Optional[str] = None
+    absolute_start_epoch: Optional[float] = None
+    absolute_end_epoch: Optional[float] = None
+    timestamp_source: Optional[str] = None
+    timestamp_status: Optional[str] = None
+    timezone: Optional[str] = "UTC"
+    raw_cctv_timestamp: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -172,7 +202,15 @@ class StitchSegment:
             "observations_count": self.observations_count,
             "observations": [o.to_dict() for o in self.observations],
             "continuity": self.continuity.to_dict(),
-            "provenance": self.provenance.to_dict()
+            "provenance": self.provenance.to_dict(),
+            "absolute_start_time": self.absolute_start_time,
+            "absolute_end_time": self.absolute_end_time,
+            "absolute_start_epoch": round(self.absolute_start_epoch, 3) if self.absolute_start_epoch is not None else None,
+            "absolute_end_epoch": round(self.absolute_end_epoch, 3) if self.absolute_end_epoch is not None else None,
+            "timestamp_source": self.timestamp_source,
+            "timestamp_status": self.timestamp_status,
+            "timezone": self.timezone,
+            "raw_cctv_timestamp": self.raw_cctv_timestamp
         }
 
 
@@ -189,6 +227,8 @@ class StitchTransition:
     transit_time_sec: float
     score: float
     signals: StitchContinuitySignals
+    absolute_transit_time_sec: Optional[float] = None
+    chronological_confidence: str = "verified"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -201,7 +241,9 @@ class StitchTransition:
             "to_segment_id": self.to_segment_id,
             "transit_time_sec": round(self.transit_time_sec, 2),
             "score": round(self.score, 4),
-            "signals": self.signals.to_dict()
+            "signals": self.signals.to_dict(),
+            "absolute_transit_time_sec": round(self.absolute_transit_time_sec, 2) if self.absolute_transit_time_sec is not None else None,
+            "chronological_confidence": self.chronological_confidence
         }
 
 
@@ -220,6 +262,7 @@ class StitchResult:
     transitions: List[StitchTransition] = field(default_factory=list)
     camera_diversity: int = 0
     total_duration_sec: float = 0.0
+    chronology_status: str = "video_relative_only"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -234,5 +277,7 @@ class StitchResult:
             "segments": [s.to_dict() for s in self.segments],
             "transitions": [t.to_dict() for t in self.transitions],
             "camera_diversity": self.camera_diversity,
-            "total_duration_sec": round(self.total_duration_sec, 2)
+            "total_duration_sec": round(self.total_duration_sec, 2),
+            "chronology_status": self.chronology_status
         }
+

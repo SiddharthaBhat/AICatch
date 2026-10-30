@@ -45,7 +45,10 @@ class StitchValidator:
     ) -> Tuple[bool, StitchContinuitySignals]:
         """Evaluates whether a cross-camera transition between two segments is physically and temporally plausible."""
         same_camera = (prev_seg.camera_id == curr_seg.camera_id)
-        transit_time = curr_seg.start_time - prev_seg.end_time
+        if not same_camera and prev_seg.absolute_end_epoch is not None and curr_seg.absolute_start_epoch is not None:
+            transit_time = curr_seg.absolute_start_epoch - prev_seg.absolute_end_epoch
+        else:
+            transit_time = curr_seg.start_time - prev_seg.end_time
 
         # 1. Strict Physical Impossibility Check:
         # A subject cannot appear on Camera B before leaving Camera A (negative transit time between different cameras)

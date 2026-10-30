@@ -1,4 +1,18 @@
-import type { Job, Camera, Track, Detection, SavedPerson, ActiveQuery, StitchResult } from "../types";
+import type {
+  Job,
+  Camera,
+  Track,
+  Detection,
+  SavedPerson,
+  ActiveQuery,
+  StitchResult,
+  CameraTimestampConfig,
+  TimestampPreviewPayload,
+  TimestampConfigPayload,
+  TimestampPreviewResult,
+  EvidenceExtraction,
+  EvidenceExtractionRequest
+} from "../types";
 
 export const API_BASE_URL = "http://localhost:8000";
 
@@ -94,6 +108,47 @@ export const apiService = {
       body: JSON.stringify(data)
     });
     if (!res.ok) throw new Error(`Failed to update camera ${cameraId}`);
+    return res.json();
+  },
+
+  // CCTV Timestamp Calibration API
+  async getCameraTimestampConfig(jobId: string, cameraId: string): Promise<CameraTimestampConfig> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}/timestamp-config`);
+    if (!res.ok) throw new Error("Failed to fetch camera timestamp config");
+    return res.json();
+  },
+
+  async detectCameraTimestamp(jobId: string, cameraId: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}/timestamp-detect`, {
+      method: "POST"
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Timestamp detection failed" }));
+      throw new Error(err.detail || "Timestamp detection failed");
+    }
+    return res.json();
+  },
+
+  async previewCameraTimestamp(jobId: string, cameraId: string, payload: TimestampPreviewPayload): Promise<TimestampPreviewResult> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}/timestamp-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error("Failed to generate timestamp preview");
+    return res.json();
+  },
+
+  async saveCameraTimestampConfig(jobId: string, cameraId: string, payload: TimestampConfigPayload): Promise<any> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/cameras/${cameraId}/timestamp-config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to save timestamp config" }));
+      throw new Error(err.detail || "Failed to save timestamp config");
+    }
     return res.json();
   },
 
@@ -459,6 +514,41 @@ export const apiService = {
   async getFolderSummary(folderId: string): Promise<{ summary: string }> {
     const res = await safeFetch(`${API_BASE_URL}/api/folders/${folderId}/summary`);
     if (!res.ok) throw new Error("Failed to fetch folder summary");
+    return res.json();
+  },
+
+
+  // Evidence Video Extraction API
+  async createEvidenceExtraction(jobId: string, payload: EvidenceExtractionRequest): Promise<EvidenceExtraction> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/evidence-extractions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to create evidence extraction" }));
+      throw new Error(err.detail || "Failed to create evidence extraction");
+    }
+    return res.json();
+  },
+
+  async listEvidenceExtractions(jobId: string): Promise<EvidenceExtraction[]> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/evidence-extractions`);
+    if (!res.ok) throw new Error("Failed to fetch evidence extractions");
+    return res.json();
+  },
+
+  async getEvidenceExtraction(jobId: string, extractionId: string): Promise<EvidenceExtraction> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/evidence-extractions/${extractionId}`);
+    if (!res.ok) throw new Error("Failed to fetch evidence extraction details");
+    return res.json();
+  },
+
+  async cancelEvidenceExtraction(jobId: string, extractionId: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE_URL}/api/jobs/${jobId}/evidence-extractions/${extractionId}/cancel`, {
+      method: "POST"
+    });
+    if (!res.ok) throw new Error("Failed to cancel evidence extraction");
     return res.json();
   }
 };

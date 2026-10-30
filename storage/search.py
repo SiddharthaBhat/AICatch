@@ -7,6 +7,7 @@ from SQLite to provide a structured API for the frontend and matcher.
 import logging
 from typing import Dict, Any, List, Optional, Union, Tuple
 from pathlib import Path
+from datetime import datetime, timezone
 
 from storage.sqlite_db import SQLiteDatabase
 from storage.vector_db import VectorDatabase
@@ -129,6 +130,14 @@ def cluster_and_diversify_occurrences(
             rep_item["occurrence_count"] = len(cluster)
             rep_item["occurrence_observations"] = cluster
 
+            if rep_item.get("absolute_epoch") is not None:
+                eff_epoch = rep_item["absolute_epoch"] - float(rep_item.get("timestamp", 0.0))
+                rep_item["absolute_occurrence_start"] = datetime.fromtimestamp(eff_epoch + start_t, tz=timezone.utc).isoformat()
+                rep_item["absolute_occurrence_end"] = datetime.fromtimestamp(eff_epoch + end_t, tz=timezone.utc).isoformat()
+            else:
+                rep_item["absolute_occurrence_start"] = None
+                rep_item["absolute_occurrence_end"] = None
+
             rep_occurrences.append(rep_item)
 
         rep_occurrences.sort(
@@ -159,6 +168,43 @@ class SearchLayer:
         self.sqlite = sqlite_db
         self.vector = vector_db
         self.media = media_storage
+
+    def _enrich_canonical_timestamps(
+        self,
+        item: Dict[str, Any],
+        camera_map: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Enriches search result item with canonical CCTV timestamp fields while preserving video-relative seconds."""
+        t_sec = float(item.get("timestamp", 0.0))
+        item["video_timestamp_seconds"] = t_sec
+
+        cam_id = item.get("camera_id")
+        cam = None
+        if camera_map and cam_id:
+            cam = camera_map.get(cam_id)
+        if not cam and cam_id:
+            cam = self.sqlite.get_camera(cam_id)
+
+        if cam:
+            item.setdefault("camera_name", cam.get("name") or cam_id)
+            eff_epoch = cam.get("effective_start_epoch")
+            if eff_epoch is not None:
+                abs_epoch = float(eff_epoch) + t_sec
+                item["absolute_epoch"] = round(abs_epoch, 3)
+                item["absolute_timestamp"] = datetime.fromtimestamp(abs_epoch, tz=timezone.utc).isoformat()
+                item["raw_cctv_timestamp"] = cam.get("detected_raw_text")
+                item["timestamp_source"] = cam.get("timestamp_config_mode") or cam.get("detected_source")
+                item["timestamp_status"] = cam.get("detected_status") or "verified"
+                item["timezone"] = cam.get("detected_timezone") or "UTC"
+                return item
+
+        item["absolute_epoch"] = None
+        item["absolute_timestamp"] = None
+        item["raw_cctv_timestamp"] = None
+        item["timestamp_source"] = None
+        item["timestamp_status"] = "unavailable"
+        item["timezone"] = "UTC"
+        return item
 
     def search_by_text(
         self,
@@ -547,7 +593,7 @@ class SearchLayer:
                         "composite": round(s_sim, 4)
                     }
                 }
-                scene_results.append(scene_item)
+                scene_results.append(self._enrich_canonical_timestamps(scene_item, camera_map))
 
         # Stage 3b: Candidate Retrieval for Spatial Regions / Tiles
         region_results: List[Dict[str, Any]] = []
@@ -683,7 +729,7 @@ class SearchLayer:
                         "composite": round(r_sim, 4)
                     }
                 }
-                region_results.append(region_item)
+                region_results.append(self._enrich_canonical_timestamps(region_item, camera_map))
 
         # Stage 4: Candidate Fusion & Re-ranking
         all_results = obj_results + region_results + scene_results
@@ -766,11 +812,12 @@ class SearchLayer:
                 bbox = [0.0, 0.0, 0.0, 0.0]
 
             camera_rec = self.sqlite.get_cameras_by_job(match["job_id"])
+            cam_map = {c["id"]: c for c in camera_rec} if camera_rec else {}
             video_source = camera_rec[0]["source_path"] if camera_rec else ""
             
             clip_path = self.media.get_clip_path(match["job_id"], match["camera_id"], match["track_id"])
             
-            inflated.append({
+            plate_item = {
                 "similarity": 1.0,  # Exact search holds absolute similarity
                 "entity_type": match["entity_type"],
                 "job_id": match["job_id"],
@@ -782,7 +829,8 @@ class SearchLayer:
                 "video_source": video_source,
                 "plate_text": match["plate_text"],
                 "video_clip_path": str(clip_path) if clip_path.exists() else None
-            })
+            }
+            inflated.append(self._enrich_canonical_timestamps(plate_item, cam_map))
             
         return inflated
 
@@ -905,6 +953,8 @@ class SearchLayer:
                     "model_version": meta.get("model_version", "1.0")
                 }
                 
+                self._enrich_canonical_timestamps(result_item, camera_map)
+
                 # Group by track_uuid, keep the highest face similarity (Section 11)
                 if track_uuid not in best_matches_by_track or similarity > best_matches_by_track[track_uuid]["similarity"]:
                     best_matches_by_track[track_uuid] = result_item
@@ -1124,6 +1174,8 @@ class SearchLayer:
                 "color_confidence": target_det.get("color_confidence")
             }
             
+            self._enrich_canonical_timestamps(result_item, camera_map)
+
             # Post-rerank relevance gate: reject weak composite matches
             if final_score_threshold > 0 and final_score < final_score_threshold:
                 continue

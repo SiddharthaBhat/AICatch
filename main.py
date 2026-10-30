@@ -11,6 +11,7 @@ import json
 import asyncio
 import queue
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 import uuid
@@ -29,6 +30,12 @@ from config import SQLITE_DB_PATH, CHROMA_PERSIST_DIR, MEDIA_DIR, UPLOAD_DIR, SE
 from storage import SQLiteDatabase, VectorDatabase, MediaStorage, SearchLayer
 from storage.search import VisualIndexEmptyError
 from pipeline import JobManager, GPUScheduler, ActiveQueryMatcher, ResultDispatcher, JourneyEngine, StitchEngine
+from pipeline.evidence_extractor import (
+    EVIDENCE_EXTRACTOR,
+    EvidenceExtractionJobManager,
+    EvidenceSegment,
+    resolve_video_path
+)
 from utils.monitor import PerformanceMonitorInstance
 
 # Set up logging
@@ -44,6 +51,7 @@ media_storage = MediaStorage()
 search_layer = SearchLayer(sqlite_db, vector_db, media_storage)
 journey_engine = JourneyEngine(sqlite_db, vector_db)
 stitch_engine = StitchEngine(sqlite_db, vector_db, media_storage)
+evidence_job_manager = EvidenceExtractionJobManager(sqlite_db, max_workers=2)
 
 matcher = ActiveQueryMatcher()
 dispatcher = ResultDispatcher(sqlite_db, vector_db, matcher)
@@ -94,6 +102,10 @@ async def startup_event():
 
     LOGGER.info("Starting GPU Inference Scheduler thread...")
     gpu_scheduler.start()
+    try:
+        evidence_job_manager.recover_stale_jobs()
+    except Exception as ee:
+        LOGGER.debug(f"Stale evidence job recovery note: {ee}")
     LOGGER.info("AICatch Server ready.")
 
 @app.on_event("shutdown")
@@ -112,6 +124,8 @@ async def shutdown_event():
 
     LOGGER.info("Flushing pending media storage writes...")
     media_storage.stop()
+    evidence_job_manager.executor.shutdown(wait=False)
+    sqlite_db.close()
 
     PerformanceMonitorInstance.stop()
     LOGGER.info("AICatch Server offline.")
@@ -138,6 +152,17 @@ class CameraAddIn(BaseModel):
 class CameraUpdateIn(BaseModel):
     name: Optional[str] = None
     path: Optional[str] = None
+
+class TimestampPreviewIn(BaseModel):
+    mode: str = "auto"  # 'auto' | 'manual_start' | 'clock_offset'
+    manual_start_time: Optional[str] = None
+    clock_offset_sec: float = 0.0
+
+class TimestampConfigIn(BaseModel):
+    mode: str = "auto"  # 'auto' | 'manual_start' | 'clock_offset'
+    manual_start_time: Optional[str] = None
+    clock_offset_sec: float = 0.0
+    scope: str = "camera"  # 'camera' | 'job'
 
 # ==============================================================================
 # 5. REST Route Handlers: Job Management
@@ -206,6 +231,37 @@ def add_job_camera(job_id: str, cam_in: CameraAddIn):
             source_path=cam_in.path or "",
             checksum=checksum
         )
+        if cam_in.path and Path(cam_in.path).exists():
+            try:
+                from pipeline.timestamp_detector import CCTVTimestampDetector, compute_effective_timestamps
+                detector = CCTVTimestampDetector()
+                det_res = detector.detect_timestamp(cam_in.path)
+                sqlite_db.update_camera_detected_timestamp(
+                    camera_id=cam_id,
+                    detected_start_time=det_res.parsed_timestamp,
+                    detected_raw_text=det_res.raw_extracted_text,
+                    detected_source=det_res.source,
+                    detected_status=det_res.status,
+                    detected_confidence=det_res.confidence,
+                    detected_timezone=det_res.timezone
+                )
+                eff_iso, eff_epoch = compute_effective_timestamps(
+                    mode="auto",
+                    detected_start_time=det_res.parsed_timestamp,
+                    manual_start_time=None,
+                    clock_offset_sec=0.0
+                )
+                sqlite_db.update_camera_timestamp_config(
+                    camera_id=cam_id,
+                    mode="auto",
+                    manual_start_time=None,
+                    clock_offset_sec=0.0,
+                    effective_start_time=eff_iso,
+                    effective_start_epoch=eff_epoch
+                )
+            except Exception as ts_err:
+                LOGGER.debug("Timestamp detection skipped on camera add: %s", ts_err)
+
         status = "ready" if cam_in.path and Path(cam_in.path).exists() else "not_configured"
         return {
             "id": cam_id,
@@ -238,6 +294,37 @@ def update_job_camera(job_id: str, camera_id: str, cam_update: CameraUpdateIn):
         new_name = cam_update.name if cam_update.name is not None else cam["name"]
         checksum = get_file_sha256(new_path) if new_path and Path(new_path).exists() else None
         sqlite_db.update_camera_source(camera_id, new_path, new_name, checksum)
+        if new_path and Path(new_path).exists():
+            try:
+                from pipeline.timestamp_detector import CCTVTimestampDetector, compute_effective_timestamps
+                detector = CCTVTimestampDetector()
+                det_res = detector.detect_timestamp(new_path)
+                sqlite_db.update_camera_detected_timestamp(
+                    camera_id=camera_id,
+                    detected_start_time=det_res.parsed_timestamp,
+                    detected_raw_text=det_res.raw_extracted_text,
+                    detected_source=det_res.source,
+                    detected_status=det_res.status,
+                    detected_confidence=det_res.confidence,
+                    detected_timezone=det_res.timezone
+                )
+                eff_iso, eff_epoch = compute_effective_timestamps(
+                    mode=cam.get("timestamp_config_mode") or "auto",
+                    detected_start_time=det_res.parsed_timestamp,
+                    manual_start_time=cam.get("manual_start_time"),
+                    clock_offset_sec=cam.get("clock_offset_sec") or 0.0
+                )
+                sqlite_db.update_camera_timestamp_config(
+                    camera_id=camera_id,
+                    mode=cam.get("timestamp_config_mode") or "auto",
+                    manual_start_time=cam.get("manual_start_time"),
+                    clock_offset_sec=cam.get("clock_offset_sec") or 0.0,
+                    effective_start_time=eff_iso,
+                    effective_start_epoch=eff_epoch
+                )
+            except Exception as ts_err:
+                LOGGER.debug("Timestamp detection skipped on camera update: %s", ts_err)
+
         status = "ready" if new_path and Path(new_path).exists() else "not_configured"
         return {
             "id": camera_id,
@@ -251,6 +338,155 @@ def update_job_camera(job_id: str, camera_id: str, cam_update: CameraUpdateIn):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/jobs/{job_id}/cameras/{camera_id}/timestamp-config")
+def get_camera_timestamp_config(job_id: str, camera_id: str):
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    cam = next((c for c in cameras if c["id"] == camera_id), None)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    return {
+        "camera_id": camera_id,
+        "job_id": job_id,
+        "timestamp_config_mode": cam.get("timestamp_config_mode") or "auto",
+        "manual_start_time": cam.get("manual_start_time"),
+        "clock_offset_sec": cam.get("clock_offset_sec") or 0.0,
+        "detected_start_time": cam.get("detected_start_time"),
+        "detected_raw_text": cam.get("detected_raw_text"),
+        "detected_source": cam.get("detected_source"),
+        "detected_status": cam.get("detected_status") or "unavailable",
+        "detected_confidence": cam.get("detected_confidence"),
+        "detected_timezone": cam.get("detected_timezone") or "UTC",
+        "effective_start_time": cam.get("effective_start_time"),
+        "effective_start_epoch": cam.get("effective_start_epoch")
+    }
+
+@app.post("/api/jobs/{job_id}/cameras/{camera_id}/timestamp-detect")
+def detect_camera_timestamp(job_id: str, camera_id: str):
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    cam = next((c for c in cameras if c["id"] == camera_id), None)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    src_path = cam.get("source_path")
+    if not src_path or not Path(src_path).exists():
+        raise HTTPException(status_code=400, detail="Video source path not found or not configured.")
+
+    from pipeline.timestamp_detector import CCTVTimestampDetector, compute_effective_timestamps
+    detector = CCTVTimestampDetector()
+    det_res = detector.detect_timestamp(src_path)
+
+    sqlite_db.update_camera_detected_timestamp(
+        camera_id=camera_id,
+        detected_start_time=det_res.parsed_timestamp,
+        detected_raw_text=det_res.raw_extracted_text,
+        detected_source=det_res.source,
+        detected_status=det_res.status,
+        detected_confidence=det_res.confidence,
+        detected_timezone=det_res.timezone
+    )
+    current_mode = cam.get("timestamp_config_mode") or "auto"
+    current_manual = cam.get("manual_start_time")
+    current_offset = cam.get("clock_offset_sec") or 0.0
+    eff_iso, eff_epoch = compute_effective_timestamps(
+        mode=current_mode,
+        detected_start_time=det_res.parsed_timestamp,
+        manual_start_time=current_manual,
+        clock_offset_sec=current_offset
+    )
+    sqlite_db.update_camera_timestamp_config(
+        camera_id=camera_id,
+        mode=current_mode,
+        manual_start_time=current_manual,
+        clock_offset_sec=current_offset,
+        effective_start_time=eff_iso,
+        effective_start_epoch=eff_epoch
+    )
+
+    return {
+        "status": "success",
+        "detection": det_res.to_dict(),
+        "effective_start_time": eff_iso,
+        "effective_start_epoch": eff_epoch
+    }
+
+@app.post("/api/jobs/{job_id}/cameras/{camera_id}/timestamp-preview")
+def preview_camera_timestamp(job_id: str, camera_id: str, preview_in: TimestampPreviewIn):
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    cam = next((c for c in cameras if c["id"] == camera_id), None)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+
+    from pipeline.timestamp_detector import compute_effective_timestamps
+    eff_iso, eff_epoch = compute_effective_timestamps(
+        mode=preview_in.mode,
+        detected_start_time=cam.get("detected_start_time"),
+        manual_start_time=preview_in.manual_start_time,
+        clock_offset_sec=preview_in.clock_offset_sec
+    )
+
+    samples = []
+    if eff_epoch is not None:
+        for t in [0.0, 30.0, 60.0]:
+            samples.append({
+                "video_seconds": t,
+                "absolute_time": datetime.fromtimestamp(eff_epoch + t, tz=timezone.utc).isoformat()
+            })
+
+    return {
+        "mode": preview_in.mode,
+        "effective_start_time": eff_iso,
+        "effective_start_epoch": eff_epoch,
+        "detected_start_time": cam.get("detected_start_time"),
+        "raw_cctv_timestamp": cam.get("detected_raw_text"),
+        "samples": samples,
+        "status": "configured" if eff_iso else "unavailable"
+    }
+
+@app.post("/api/jobs/{job_id}/cameras/{camera_id}/timestamp-config")
+def save_camera_timestamp_config(job_id: str, camera_id: str, config_in: TimestampConfigIn):
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    cam = next((c for c in cameras if c["id"] == camera_id), None)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+
+    from pipeline.timestamp_detector import compute_effective_timestamps
+    eff_iso, eff_epoch = compute_effective_timestamps(
+        mode=config_in.mode,
+        detected_start_time=cam.get("detected_start_time"),
+        manual_start_time=config_in.manual_start_time,
+        clock_offset_sec=config_in.clock_offset_sec
+    )
+
+    if config_in.scope == "job":
+        sqlite_db.update_job_cameras_timestamp_config(
+            job_id=job_id,
+            mode=config_in.mode,
+            manual_start_time=config_in.manual_start_time,
+            clock_offset_sec=config_in.clock_offset_sec,
+            effective_start_time=eff_iso,
+            effective_start_epoch=eff_epoch
+        )
+    else:
+        sqlite_db.update_camera_timestamp_config(
+            camera_id=camera_id,
+            mode=config_in.mode,
+            manual_start_time=config_in.manual_start_time,
+            clock_offset_sec=config_in.clock_offset_sec,
+            effective_start_time=eff_iso,
+            effective_start_epoch=eff_epoch
+        )
+
+    return {
+        "status": "success",
+        "scope": config_in.scope,
+        "camera_id": camera_id,
+        "job_id": job_id,
+        "mode": config_in.mode,
+        "manual_start_time": config_in.manual_start_time,
+        "clock_offset_sec": config_in.clock_offset_sec,
+        "effective_start_time": eff_iso,
+        "effective_start_epoch": eff_epoch
+    }
 
 @app.post("/api/jobs/{job_id}/pause")
 def pause_job(job_id: str):
@@ -1756,6 +1992,151 @@ def get_system_telemetry():
 # ==============================================================================
 # 11b. Forensic Video Clip & Journey Merging Endpoints
 # ==============================================================================
+class EvidenceExtractionIn(BaseModel):
+    title: Optional[str] = "Evidence Video"
+    observations: Optional[List[Dict[str, Any]]] = None
+    track_uuids: Optional[List[str]] = None
+    buffer_sec: float = 2.0
+    enable_overlay: bool = True
+    folder_name: Optional[str] = "Evidence Extractions"
+    folder_id: Optional[str] = None
+
+@app.post("/api/jobs/{job_id}/evidence-extractions")
+def create_evidence_extraction(job_id: str, req: EvidenceExtractionIn):
+    """Submits an asynchronous evidence video compilation background job."""
+    job = sqlite_db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    cameras = sqlite_db.get_cameras_by_job(job_id)
+    cam_map = {c["id"]: c for c in cameras}
+
+    segments: List[EvidenceSegment] = []
+
+    if req.observations:
+        for obs in req.observations:
+            cid = obs.get("camera_id") or (cameras[0]["id"] if cameras else "")
+            cam = cam_map.get(cid, {})
+            src_str = obs.get("source_path") or obs.get("video_source") or cam.get("source_path")
+            src_path = resolve_video_path(src_str)
+            if not src_path:
+                LOGGER.warning(f"Skipping observation in extraction: could not resolve source {src_str}")
+                continue
+
+            ts = float(obs.get("timestamp") or obs.get("start_time") or 0.0)
+            end_t = float(obs.get("end_time") or (ts + float(obs.get("duration", 2.0))))
+
+            segments.append(EvidenceSegment(
+                source_path=src_path,
+                camera_id=cid,
+                camera_name=obs.get("camera_name") or cam.get("name") or cid,
+                video_id=cam.get("video_id") or cid,
+                job_id=job_id,
+                start_sec=ts,
+                end_sec=end_t,
+                track_id=obs.get("track_id") or obs.get("track_uuid"),
+                bbox=obs.get("bbox"),
+                raw_cctv_timestamp=obs.get("raw_cctv_timestamp") or cam.get("detected_raw_text"),
+                detected_start_time=obs.get("detected_start_time") or cam.get("detected_start_time"),
+                effective_start_time=obs.get("effective_start_time") or cam.get("effective_start_time"),
+                effective_start_epoch=obs.get("effective_start_epoch") or cam.get("effective_start_epoch"),
+                clock_offset_sec=float(obs.get("clock_offset_sec") or cam.get("clock_offset_sec") or 0.0),
+                timestamp_source=obs.get("timestamp_source") or cam.get("timestamp_config_mode") or cam.get("detected_source"),
+                timestamp_status=obs.get("timestamp_status") or cam.get("detected_status") or "verified",
+                timezone=obs.get("timezone") or cam.get("detected_timezone") or "UTC"
+            ))
+
+    elif req.track_uuids:
+        for tuuid in req.track_uuids:
+            track = sqlite_db.get_track(tuuid)
+            if not track:
+                continue
+            cid = track.get("camera_id")
+            cam = cam_map.get(cid, {})
+            src_str = cam.get("source_path")
+            src_path = resolve_video_path(src_str)
+            if not src_path:
+                continue
+
+            t_start = float(track.get("start_time", 0.0))
+            t_end = float(track.get("end_time", t_start + 2.0))
+
+            segments.append(EvidenceSegment(
+                source_path=src_path,
+                camera_id=cid,
+                camera_name=cam.get("name") or cid,
+                video_id=cam.get("video_id") or cid,
+                job_id=job_id,
+                start_sec=t_start,
+                end_sec=t_end,
+                track_id=track.get("track_id") or tuuid,
+                raw_cctv_timestamp=cam.get("detected_raw_text"),
+                detected_start_time=cam.get("detected_start_time"),
+                effective_start_time=cam.get("effective_start_time"),
+                effective_start_epoch=cam.get("effective_start_epoch"),
+                clock_offset_sec=float(cam.get("clock_offset_sec") or 0.0),
+                timestamp_source=cam.get("timestamp_config_mode") or cam.get("detected_source"),
+                timestamp_status=cam.get("detected_status") or "verified",
+                timezone=cam.get("detected_timezone") or "UTC"
+            ))
+
+    if not segments:
+        raise HTTPException(status_code=400, detail="No valid observations or tracks could be resolved for extraction.")
+
+    segments.sort(key=lambda s: s.start_sec)
+
+    folder_id = req.folder_id
+    if not folder_id and req.folder_name:
+        try:
+            folders = sqlite_db.get_folders(job_id)
+            target_folder = next((f for f in folders if f["name"] == req.folder_name), None)
+            if not target_folder:
+                fid = f"fold_{uuid.uuid4().hex[:12]}"
+                sqlite_db.create_folder(fid, req.folder_name, "Compiled evidence video extractions", job_id)
+                folder_id = fid
+            else:
+                folder_id = target_folder["id"]
+        except Exception as fe:
+            LOGGER.debug(f"Folder resolution note: {fe}")
+
+    title = req.title or f"Evidence Video - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+    extraction_id = evidence_job_manager.submit_job(
+        job_id=job_id,
+        title=title,
+        segments=segments,
+        context_buffer_sec=req.buffer_sec,
+        enable_overlay=req.enable_overlay,
+        folder_id=folder_id
+    )
+
+    return {
+        "status": "queued",
+        "id": extraction_id,
+        "job_id": job_id,
+        "title": title,
+        "segments_count": len(segments),
+        "progress": 0.0
+    }
+
+@app.get("/api/jobs/{job_id}/evidence-extractions")
+def list_evidence_extractions(job_id: str):
+    """Lists all evidence extractions for a job."""
+    return evidence_job_manager.list_jobs(job_id=job_id)
+
+@app.get("/api/jobs/{job_id}/evidence-extractions/{extraction_id}")
+def get_evidence_extraction_status(job_id: str, extraction_id: str):
+    """Fetches real-time status and manifest for a specific evidence extraction."""
+    status = evidence_job_manager.get_job_status(extraction_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Evidence extraction job not found.")
+    return status
+
+@app.post("/api/jobs/{job_id}/evidence-extractions/{extraction_id}/cancel")
+def cancel_evidence_extraction(job_id: str, extraction_id: str):
+    """Cancels a running evidence extraction job."""
+    success = evidence_job_manager.cancel_job(extraction_id)
+    return {"status": "cancelled" if success else "not_found", "id": extraction_id}
+
 class MergeClipsRequest(BaseModel):
     observations: List[Dict[str, Any]]
     buffer_sec: float = 3.0

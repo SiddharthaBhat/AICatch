@@ -701,3 +701,77 @@ class TimestampResolutionEngine:
 
 # Global instance
 TIMESTAMP_ENGINE = TimestampResolutionEngine()
+
+
+def compute_effective_timestamps(
+    config_mode: Optional[str] = None,
+    manual_start_time: Optional[str] = None,
+    clock_offset_sec: float = 0.0,
+    detected_start_iso: Optional[str] = None,
+    detected_start_epoch: Optional[float] = None,
+    mode: Optional[str] = None,
+    detected_start_time: Optional[str] = None
+) -> Tuple[Optional[str], Optional[float]]:
+    """Computes effective recording start time and epoch based on configuration mode.
+
+    Returns:
+        (effective_start_iso, effective_start_epoch)
+    """
+    clean_mode = (mode or config_mode or "auto").strip().lower()
+    start_iso = detected_start_time or detected_start_iso
+
+    # Resolve detected start epoch from ISO if not passed directly
+    if detected_start_epoch is None and start_iso:
+        try:
+            clean_iso = start_iso.strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            detected_start_epoch = dt.timestamp()
+            start_iso = dt.isoformat()
+        except Exception:
+            dt, _, _, _ = parse_cctv_timestamp_text(start_iso)
+            if dt:
+                detected_start_epoch = dt.timestamp()
+                start_iso = dt.isoformat()
+
+    if clean_mode in ("manual_start", "set_recording_start"):
+        if not manual_start_time or not manual_start_time.strip():
+            return None, None
+        try:
+            clean = manual_start_time.strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat(), dt.timestamp()
+        except Exception:
+            dt, st, _, _ = parse_cctv_timestamp_text(manual_start_time)
+            if dt:
+                return dt.isoformat(), dt.timestamp()
+            return None, None
+
+    elif clean_mode in ("manual_offset", "clock_offset"):
+        if detected_start_epoch is None:
+            return None, None
+        eff_epoch = float(detected_start_epoch) + float(clock_offset_sec)
+        eff_dt = datetime.fromtimestamp(eff_epoch, tz=timezone.utc)
+        return eff_dt.isoformat(), eff_epoch
+
+    else:  # "automatic", "auto"
+        if start_iso and detected_start_epoch is not None:
+            return start_iso, float(detected_start_epoch)
+        return None, None
+
+
+def observation_to_absolute_time(
+    video_timestamp_sec: float,
+    effective_start_epoch: Optional[float] = None
+) -> Tuple[Optional[str], Optional[float]]:
+    """Converts video-relative position (seconds) into an absolute timestamp."""
+    if effective_start_epoch is None:
+        return None, None
+    if video_timestamp_sec > 100000000.0 and effective_start_epoch < 100000000.0:
+        video_timestamp_sec, effective_start_epoch = effective_start_epoch, video_timestamp_sec
+    obs_epoch = float(effective_start_epoch) + float(video_timestamp_sec)
+    obs_dt = datetime.fromtimestamp(obs_epoch, tz=timezone.utc)
+    return obs_dt.isoformat(), obs_epoch

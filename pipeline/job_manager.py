@@ -97,6 +97,37 @@ class JobManager:
                 source_path=cam["path"],
                 checksum=checksum
             )
+
+            # Automatic CCTV timestamp detection
+            if cam.get("path") and Path(cam["path"]).exists():
+                try:
+                    from pipeline.timestamp_detector import CCTVTimestampDetector, compute_effective_timestamps
+                    det = CCTVTimestampDetector().detect_timestamp(cam["path"])
+                    self.sqlite.update_camera_detected_timestamp(
+                        camera_id=cam_id,
+                        detected_start_time=det.parsed_timestamp,
+                        detected_raw_text=det.raw_extracted_text,
+                        detected_source=det.source,
+                        detected_status=det.status,
+                        detected_confidence=det.confidence,
+                        detected_timezone=det.timezone
+                    )
+                    eff_iso, eff_epoch = compute_effective_timestamps(
+                        mode="auto",
+                        detected_start_time=det.parsed_timestamp,
+                        manual_start_time=None,
+                        clock_offset_sec=0.0
+                    )
+                    self.sqlite.update_camera_timestamp_config(
+                        camera_id=cam_id,
+                        mode="auto",
+                        manual_start_time=None,
+                        clock_offset_sec=0.0,
+                        effective_start_time=eff_iso,
+                        effective_start_epoch=eff_epoch
+                    )
+                except Exception as ts_err:
+                    LOGGER.debug("Initial timestamp detection skipped for %s: %s", cam_id, ts_err)
             
         LOGGER.info(f"Created job: {name} ({job_id}) with {len(camera_sources)} cameras.")
         return job_id

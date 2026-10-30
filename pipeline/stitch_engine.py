@@ -13,6 +13,7 @@ Guarantees:
 import logging
 import uuid
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Union, Tuple
 
 from storage.sqlite_db import SQLiteDatabase
@@ -91,13 +92,24 @@ class StitchEngine:
         # 2. Strict cross-investigation isolation check
         valid_obs = StitchValidator.validate_observations_for_job(normalized_obs, expected_job_id=job_id)
 
-        # Resolve camera display names
+        # Resolve camera display names and timestamp calibration metadata
         cameras = self.sqlite.get_cameras_by_job(job_id) if hasattr(self.sqlite, "get_cameras_by_job") else []
         camera_name_map = {c["id"]: c.get("name", c["id"]) for c in cameras}
+        camera_meta_map = {c["id"]: c for c in cameras}
 
         for o in valid_obs:
             if not o.camera_name:
                 o.camera_name = camera_name_map.get(o.camera_id, o.camera_id)
+            if o.absolute_epoch is None:
+                cam_rec = camera_meta_map.get(o.camera_id, {})
+                eff_epoch = cam_rec.get("effective_start_epoch")
+                if eff_epoch is not None:
+                    o.absolute_epoch = float(eff_epoch) + float(o.timestamp)
+                    o.absolute_timestamp = datetime.fromtimestamp(o.absolute_epoch, tz=timezone.utc).isoformat()
+                    o.timestamp_source = cam_rec.get("timestamp_config_mode") or cam_rec.get("detected_source")
+                    o.timestamp_status = cam_rec.get("detected_status") or "verified"
+                    o.raw_cctv_timestamp = cam_rec.get("detected_raw_text")
+                    o.timezone = cam_rec.get("detected_timezone") or "UTC"
 
         if not valid_obs:
             return StitchResult(
@@ -114,7 +126,8 @@ class StitchEngine:
             observations=valid_obs,
             job_id=job_id,
             temporal_window_sec=temporal_window_sec,
-            camera_name_map=camera_name_map
+            camera_name_map=camera_name_map,
+            camera_meta_map=camera_meta_map
         )
 
         if not segments:
@@ -127,8 +140,17 @@ class StitchEngine:
                 reason="Unable to form valid temporal occurrence segments from candidate evidence."
             )
 
-        # 4. Sort segments chronologically by start timestamp
-        segments.sort(key=lambda s: s.start_time)
+        # 4. Chronological Ordering:
+        # Cross-camera chronology uses corrected absolute timestamps when available.
+        # Same-camera segments always preserve source video order (start_time).
+        all_have_absolute = len(segments) > 0 and all(s.absolute_start_epoch is not None for s in segments)
+        if all_have_absolute and len(segments) > 1:
+            segments.sort(key=lambda s: (s.absolute_start_epoch, s.start_time))
+            chronology_status = "absolute_synchronized"
+        else:
+            segments.sort(key=lambda s: s.start_time)
+            has_any_abs = any(s.absolute_start_epoch is not None for s in segments)
+            chronology_status = "partially_synchronized" if has_any_abs else "video_relative_only"
 
         # 5. Build cross-camera transitions and evaluate plausibility
         confirmed_segments: List[StitchSegment] = [segments[0]]
@@ -146,14 +168,28 @@ class StitchEngine:
             )
 
             if not is_plausible:
-                # Physically impossible (e.g. negative transit between different cameras)
+                # Physically impossible
                 LOGGER.info("STITCH_PRUNE: Pruned transition from %s to %s (%s)", prev_seg.camera_id, curr_seg.camera_id, signals.reason)
                 continue
 
             # Update segment continuity signals
             curr_seg.continuity = signals
 
-            transit_time = max(0.0, curr_seg.start_time - prev_seg.end_time)
+            is_cross_sync = (
+                prev_seg.camera_id != curr_seg.camera_id and
+                prev_seg.absolute_end_epoch is not None and
+                curr_seg.absolute_start_epoch is not None
+            )
+
+            if is_cross_sync:
+                transit_time = max(0.0, curr_seg.absolute_start_epoch - prev_seg.absolute_end_epoch)
+                abs_transit_time = transit_time
+                chronological_conf = "verified"
+            else:
+                transit_time = max(0.0, curr_seg.start_time - prev_seg.end_time)
+                abs_transit_time = None
+                chronological_conf = "uncalibrated" if prev_seg.camera_id != curr_seg.camera_id else "verified"
+
             trans = StitchTransition(
                 transition_id=f"trans_{uuid.uuid4().hex[:8]}",
                 from_camera=prev_seg.camera_id,
@@ -164,7 +200,9 @@ class StitchEngine:
                 to_segment_id=curr_seg.segment_id,
                 transit_time_sec=transit_time,
                 score=signals.score,
-                signals=signals
+                signals=signals,
+                absolute_transit_time_sec=abs_transit_time,
+                chronological_confidence=chronological_conf
             )
             transitions.append(trans)
             confirmed_segments.append(curr_seg)
@@ -189,7 +227,8 @@ class StitchEngine:
                 "start_time": first_seg.start_time,
                 "end_time": first_seg.end_time,
                 "representative_crop": first_seg.representative_crop_path,
-                "entity_type": entity_type_clean
+                "entity_type": entity_type_clean,
+                "absolute_start_time": first_seg.absolute_start_time
             }
 
         return StitchResult(
@@ -203,15 +242,18 @@ class StitchEngine:
             segments=confirmed_segments,
             transitions=transitions,
             camera_diversity=len(unique_cameras),
-            total_duration_sec=max(0.0, total_duration)
+            total_duration_sec=max(0.0, total_duration),
+            chronology_status=chronology_status
         )
+
 
     def _group_observations_into_segments(
         self,
         observations: List[StitchObservation],
         job_id: str,
         temporal_window_sec: float,
-        camera_name_map: Dict[str, str]
+        camera_name_map: Dict[str, str],
+        camera_meta_map: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> List[StitchSegment]:
         """Groups raw observations by camera and temporal proximity into occurrence segments."""
         # Partition observations by camera_id
@@ -244,13 +286,13 @@ class StitchEngine:
                         cluster_end = max(cluster_end, obs_end)
                     else:
                         # Finalize previous segment
-                        segments.append(self._create_segment(current_cluster, cluster_start, cluster_end, job_id, cam_id, camera_name_map))
+                        segments.append(self._create_segment(current_cluster, cluster_start, cluster_end, job_id, cam_id, camera_name_map, camera_meta_map))
                         current_cluster = [obs]
                         cluster_start = obs_start
                         cluster_end = obs_end
 
             if current_cluster:
-                segments.append(self._create_segment(current_cluster, cluster_start, cluster_end, job_id, cam_id, camera_name_map))
+                segments.append(self._create_segment(current_cluster, cluster_start, cluster_end, job_id, cam_id, camera_name_map, camera_meta_map))
 
         return segments
 
@@ -261,7 +303,8 @@ class StitchEngine:
         end_time: float,
         job_id: str,
         cam_id: str,
-        camera_name_map: Dict[str, str]
+        camera_name_map: Dict[str, str],
+        camera_meta_map: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> StitchSegment:
         """Constructs a single StitchSegment from a list of clustered observations."""
         segment_id = f"seg_{uuid.uuid4().hex[:8]}"
@@ -303,6 +346,36 @@ class StitchEngine:
             detection_id=rep_obs.detection_id
         )
 
+        cam_meta = (camera_meta_map or {}).get(cam_id, {})
+        eff_start_epoch = cam_meta.get("effective_start_epoch")
+        if eff_start_epoch is None and cluster and cluster[0].absolute_epoch is not None:
+            abs_start_epoch = cluster[0].absolute_epoch
+            abs_end_epoch = cluster[-1].absolute_epoch if cluster[-1].absolute_epoch is not None else (abs_start_epoch + duration)
+            abs_start_time = cluster[0].absolute_timestamp
+            abs_end_time = datetime.fromtimestamp(abs_end_epoch, tz=timezone.utc).isoformat()
+            ts_source = cluster[0].timestamp_source
+            ts_status = cluster[0].timestamp_status
+            ts_tz = cluster[0].timezone or "UTC"
+            raw_cctv = cluster[0].raw_cctv_timestamp
+        elif eff_start_epoch is not None:
+            abs_start_epoch = float(eff_start_epoch) + float(start_time)
+            abs_end_epoch = float(eff_start_epoch) + float(end_time)
+            abs_start_time = datetime.fromtimestamp(abs_start_epoch, tz=timezone.utc).isoformat()
+            abs_end_time = datetime.fromtimestamp(abs_end_epoch, tz=timezone.utc).isoformat()
+            ts_source = cam_meta.get("timestamp_config_mode") or cam_meta.get("detected_source")
+            ts_status = cam_meta.get("detected_status") or "verified"
+            ts_tz = cam_meta.get("detected_timezone") or "UTC"
+            raw_cctv = cam_meta.get("detected_raw_text")
+        else:
+            abs_start_epoch = None
+            abs_end_epoch = None
+            abs_start_time = None
+            abs_end_time = None
+            ts_source = None
+            ts_status = "unavailable"
+            ts_tz = "UTC"
+            raw_cctv = None
+
         return StitchSegment(
             segment_id=segment_id,
             camera_id=cam_id,
@@ -316,7 +389,15 @@ class StitchEngine:
             observations_count=len(cluster),
             observations=cluster,
             continuity=continuity,
-            provenance=provenance
+            provenance=provenance,
+            absolute_start_time=abs_start_time,
+            absolute_end_time=abs_end_time,
+            absolute_start_epoch=abs_start_epoch,
+            absolute_end_epoch=abs_end_epoch,
+            timestamp_source=ts_source,
+            timestamp_status=ts_status,
+            timezone=ts_tz,
+            raw_cctv_timestamp=raw_cctv
         )
 
     def _expand_candidates_for_track(

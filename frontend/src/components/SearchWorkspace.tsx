@@ -672,7 +672,14 @@ export const SearchWorkspace: React.FC<SearchWorkspaceProps> = ({
                         </div>
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                        <span>Time: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"}</span>
+                        <span>
+                          Time: {typeof res.timestamp === "number" ? `${res.timestamp.toFixed(1)}s` : "N/A"}
+                          {res.absolute_timestamp && (
+                            <span style={{ marginLeft: "4px", color: "var(--color-accent)", fontSize: "10px" }} title="Calibrated CCTV Timestamp">
+                              ({res.absolute_timestamp.replace('T', ' ').substring(11, 19)})
+                            </span>
+                          )}
+                        </span>
                         {(res.label || res.track_id || res.track_uuid) && (
                           <span style={{ color: "var(--text-muted)", fontSize: "10px", fontFamily: "monospace" }}>
                             {res.label || (typeof res.track_id === "number" || (typeof res.track_id === "string" && !res.track_id.includes("-")) ? `Track #${res.track_id}` : `Track ${String(res.track_uuid || res.track_id).slice(0, 8)}`)}

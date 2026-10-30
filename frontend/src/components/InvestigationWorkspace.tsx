@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   ArrowLeft, Search, Layers, FolderOpen, FileText, 
-  Eye, AlertCircle, ChevronRight, RefreshCw, Download
+  Eye, AlertCircle, ChevronRight, RefreshCw, Download, Clock
 } from "lucide-react";
 import type { Job, Camera, Track } from "../types";
 import { apiService, getMediaUrl } from "../services/api";
@@ -10,6 +10,7 @@ import { JourneyView } from "./JourneyView";
 import { Evidence } from "./Evidence";
 import { ForensicVideoViewer, type ObservationTarget } from "./ForensicVideoViewer";
 import { SubjectSummaryModal } from "./SubjectSummaryModal";
+import { CameraTimestampModal } from "./CameraTimestampModal";
 
 interface InvestigationWorkspaceProps {
   jobId: string;
@@ -25,6 +26,7 @@ export const InvestigationWorkspace: React.FC<InvestigationWorkspaceProps> = ({ 
 
   // Selected camera for Overview video player
   const [selectedPreviewCamera, setSelectedPreviewCamera] = useState<Camera | null>(null);
+  const [timestampModalCamera, setTimestampModalCamera] = useState<Camera | null>(null);
 
   // Target Subject state for Journey and Subject Summary
   const [targetSubject, setTargetSubject] = useState<{
@@ -407,6 +409,19 @@ export const InvestigationWorkspace: React.FC<InvestigationWorkspaceProps> = ({ 
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTimestampModalCamera(cam);
+                          }}
+                          style={{ fontSize: "11px", padding: "4px 8px", display: "flex", alignItems: "center", gap: "4px" }}
+                          title="Configure CCTV timestamp detection or clock offset"
+                        >
+                          <Clock size={12} />
+                          {cam.timestamp_config_mode && cam.timestamp_config_mode !== 'auto' ? 'Calibrated' : 'Timestamps'}
+                        </button>
                         <span className="badge badge-completed" style={{ fontSize: "9px" }}>
                           Indexed
                         </span>
@@ -628,6 +643,25 @@ export const InvestigationWorkspace: React.FC<InvestigationWorkspaceProps> = ({ 
             </div>
           )}
         </div>
+      )}
+
+
+      {/* CCTV Timestamp Configuration Modal */}
+      {timestampModalCamera && (
+        <CameraTimestampModal
+          jobId={jobId}
+          camera={timestampModalCamera}
+          isOpen={!!timestampModalCamera}
+          onClose={() => setTimestampModalCamera(null)}
+          onConfigSaved={async () => {
+            try {
+              const updatedCams = await apiService.getJobCameras(jobId);
+              setCameras(updatedCams);
+            } catch (e) {
+              console.error("Failed to reload cameras after timestamp save:", e);
+            }
+          }}
+        />
       )}
 
       {/* Forensic Video Viewer Modal */}
